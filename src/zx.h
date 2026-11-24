@@ -35,6 +35,8 @@ static inline void zx_tick(int32_t t)
 
 /* Port I/O, as seen by the game. */
 uint8_t zx_in(uint16_t port);
+/* Optional filter on every IN (used by the comparison test). */
+extern uint8_t (*zx_in_filter)(uint16_t port, uint8_t value);
 void    zx_out(uint16_t port, uint8_t value);
 
 /* Keyboard matrix: 8 half-rows, bits 0-4, 0 = pressed (like the real ULA). */
@@ -75,8 +77,25 @@ extern uint8_t   zx_beep_level;          /* level at start of frame / now */
 #define ZX_SCREEN_H 240
 void zx_render(uint32_t *pixels, int pitch_pixels, int flash_phase);
 
-/* Hook the host installs: called once per emulated frame (50 Hz). */
+/* Hook the host installs: called once per emulated frame (50 Hz), at the
+ * end of the frame (beeper/AY events for the frame are complete). */
 extern void (*zx_frame_hook)(void);
+
+/* Maskable interrupt, raised at the start of every frame. The game code
+ * keeps zx_iff/zx_im up to date at its DI/EI/IM instructions; the game
+ * installs zx_int_hook to run its interrupt handler (Manic Miner 128's IM2
+ * music player). The original Manic Miner runs with interrupts off. */
+extern int  zx_iff, zx_im;
+extern void (*zx_int_hook)(void);
+
+/* AY-3-8912 (128K sound chip): register writes recorded with T-state
+ * offsets within the current frame, plus the current register file. */
+#define ZX_AY_MAX 4096
+typedef struct { uint32_t t; uint8_t reg, val; } zx_ay_t;
+extern zx_ay_t zx_ay_log[ZX_AY_MAX];
+extern int     zx_ay_count;
+extern uint8_t zx_ay_regs[16];
+void zx_ay_write(uint8_t reg, uint8_t val);
 
 void zx_reset(void);
 

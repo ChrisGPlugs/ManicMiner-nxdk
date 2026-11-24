@@ -84,11 +84,20 @@
 #define KeyCounter               0x845D
 #define KP6031769xN              0x845E
 #define KP6031769x6              0x8460
+#ifndef MM128
 #define TitleScreenTuneData      0x846E
 #define InGameTuneData           0x858C
 #define Start_CODE               0x85CC   /* first byte of the 'Start' routine */
+#else
+/* Software Projects / 128: the cheat table is 6 bytes longer (TYPEWRITER),
+ * so everything from the title tune on moves up by 6. */
+#define TitleScreenTuneData      33908
+#define InGameTuneData           34194    /* still present, no longer played */
+#define Start_CODE               34258
+#endif
 #define MemTop                   0x9CFE   /* original stack top */
 
+#ifndef MM128
 /* ---- Title screen and cavern data (0x9D00 - 0xFFFF) -------------------- */
 #define TitleScreenBanner        0x9D00
 #define BottomAttributes         0x9E00
@@ -100,5 +109,37 @@
 #define TheFinalBarrierData      0xFC00
 
 #define PlinthGraphicData        0xB6E0   /* in The Cold Room's spare bytes */
+#define DCCTSB4_OPERAND          0x8A9C   /* operand of the self-modified LD D,n */
+
+#else
+/* ---- Manic Miner 128 (Mihai Novitchi / Bob Fossil, Software Projects) --- */
+#define DCCTSB4_OPERAND          35495
+#define SwordfishGraphicData     37739
+#define PlinthGraphicData        37771
+#define BootGraphicData          37803
+#define Unpack                   37835    /* LZ unpacker; self-modifying: */
+#define UnpackMarker             37956    /*   operand of CP n (escape byte) */
+#define UnpackHookDE             37962    /*   RET (201) or NOP (0): DE 0x6000 -> 0x8000 */
+#define UnpackHookHL             37974    /*   RET (201) or NOP (0): HL 0x6000 -> 0x8000 */
+#define MenuText                 37986    /* "1 Infinite lives: NO ..." */
+#define MenuLivesYesNo           38004
+#define MenuAirYesNo             38023
+#define MenuMusicYesNo           38035
+#define MenuMusicOffJump         38328    /* operand of JP nn (-> 40016) */
+#define TitleTuneCall            34360    /* operand of CALL nn (-> 40023) */
+#define PatchAirCall             34843    /* CALL DecreaseAirRemaining / LD A,1:OR A */
+#define PatchLivesDec            35147    /* DEC (HL) (53) / NOP (0) */
+#define PatchBeamCalls           36264    /* 4 x CALL DecreaseAirRemaining / NOPs */
+#define DecreaseAirRemaining_CODE 35399
+#define IM2Table                 39680    /* 257 bytes of 156 -> vector 0x9C9C */
+#define IM2Handler               40092
+#define MusicOn                  40113    /* operand of LD BC,nn: 1 = music on */
+#define PackedTitleScreen        40192    /* 4096 bytes when unpacked */
+#define TitleScreenBanner        41934
+#define PackedTitleAttributes    42190    /* 768 bytes when unpacked */
+#define CavernTable              42568    /* 20 x (word address, byte) */
+#define STPlayerInit             49152
+#define STPlayerPlay             49158
+#endif
 
 #endif

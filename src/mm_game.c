@@ -24,11 +24,37 @@
 #include "zx.h"
 #include "mm_mem.h"
 #include "mm_game.h"
+#ifdef MM128
+#include "st_player.h"
+#endif
 
 #define M(a)  mem[(uint16_t)(a)]
 #define T(n)  zx_tick(n)
 
+#ifndef MM128
+/* Bug-Byte: cheat 6031769 on keys 1-5 / 6-0, teleport with '6' held. */
+#define CHEAT_DONE    7
+#define CHEAT_ROW1    0xF7FE
+#define CHEAT_ROW2    0xEFFE
+#define TELEPORT_BIT  0x10
+#define ENTER_PORT    0xBFFE
+#else
+/* Software Projects: cheat TYPEWRITER on Q-T / P-Y, teleport with '9';
+ * ENTER or '0' starts the game. */
+#define CHEAT_DONE    10
+#define CHEAT_ROW1    0xFBFE
+#define CHEAT_ROW2    0xDFFE
+#define TELEPORT_BIT  0x02
+#define ENTER_PORT    0xAFFE
+#endif
+
 void (*mm_mainloop_hook)(void);
+void (*mm_music_tick_hook)(void);
+
+#ifdef MM128
+static void UnpackData(uint16_t hl, uint16_t de, uint16_t bc, uint8_t a);
+static void CheatMenu(void);
+#endif
 
 static inline uint16_t rd16(uint16_t a) { return (uint16_t)(M(a) | (M(a + 1) << 8)); }
 static inline void wr16(uint16_t a, uint16_t v) { M(a) = (uint8_t)v; M(a + 1) = (uint8_t)(v >> 8); }
@@ -165,9 +191,8 @@ static int DecreaseAirRemaining(void)
 /* ------------------------------------------------------------------------ */
 /* DrawCurrentCavernToScreenBuffer                                          */
 /* ------------------------------------------------------------------------ */
-/* Address of the operand of the self-modified 'LD D,n' at
- * DrawCurrentCavernToScreenBuffer4 + 1. Kept in mem[] for fidelity. */
-#define DCCTSB4_OPERAND 0x8A9C
+/* DCCTSB4_OPERAND (mm_mem.h) is the operand of the self-modified 'LD D,n'
+ * at DrawCurrentCavernToScreenBuffer4 + 1; kept in mem[] for fidelity. */
 
 static void DrawCurrentCavernToScreenBuffer2(uint16_t ix)
 {
@@ -195,8 +220,13 @@ static void DrawCurrentCavernToScreenBuffer2(uint16_t ix)
     T(13 + 7 + 5);
     if (M(CurrentCavernNumber) == 19) {
         /* The Final Barrier: top half comes from the title screen graphic. */
+#ifndef MM128
         T(10 + 10 + 10);
         ldir(TitleScreenDataTop, EmptyCavernScreenBuffer, 2048);
+#else
+        T(10 + 10 + 10 + 7 + 17);
+        UnpackData(PackedTitleScreen, EmptyCavernScreenBuffer, 2048, 201);
+#endif
     }
     T(10);
 }
@@ -458,6 +488,14 @@ static int MoveWilly2(uint16_t hl)
     }
     /* MV2x2: keyboard and joystick. */
     uint8_t a;
+#ifdef MM128
+    /* '1' opens Mihai Novitchi's options menu. */
+    T(11 + 10);
+    a = in_port(0xF7FE);
+    T(7 + 10);
+    if (!(a & 1)) { T(7); CheatMenu(); }
+    T(10);
+#endif
     T(10);
     a = in_port(0xDFFE);                             /* P-O-I-U-Y */
     a = (uint8_t)(((a & 0x1F) | 0x20) & e); e = a;
@@ -466,13 +504,24 @@ static int MoveWilly2(uint16_t hl)
     a = (uint8_t)(rotl((uint8_t)(a & 0x1F), 1) | 1);
     e &= a;
     T(7 + 8 + 7 + 4 + 4 + 7);
-    a = in_port(0xF7FE);                             /* 1-2-3-4-5 */
+#ifndef MM128
+    a = in_port(0xF7FE);                             /* 1-2-3-4-5 ('5' left) */
+#else
+    a = in_port(0xE7FE);                             /* 1-5 and 6-0 ('5'/'6' left) */
+#endif
     a = (uint8_t)(rotr(a, 1) | 0xF7);
     e &= a;
     T(4 + 7 + 4 + 4 + 7);
-    a = in_port(0xEFFE);                             /* 0-9-8-7-6 */
+    a = in_port(0xEFFE);                             /* 0-9-8-7-6 ('8' right) */
     a |= 0xFB;
     e &= a;
+#ifdef MM128
+    T(4 + 4);
+    a = in_port(0xEFFE);                             /* '7' right */
+    a = (uint8_t)(rotr(a, 1) | 0xFB);
+    e &= a;
+    T(4 + 7 + 4 + 4);
+#endif
     T(7 + 4 + 4 + 13 + 4 + 12);
     if (M(KempJoystickIndicator)) {
         T(10 - 5);
@@ -500,8 +549,13 @@ static int MoveWilly2(uint16_t hl)
     if ((a & 0x1F) != 0x1F) goto MV2x6;
     T(7 - 5);
     a = in_port(0xEFFE);                             /* 0-9-8-7-6 */
+#ifndef MM128
     T(7 + 7 + 12);
-    if ((a & 0x09) != 0x09) goto MV2x6;
+    if ((a & 0x09) != 0x09) goto MV2x6;              /* '0' or '7' */
+#else
+    T(8 + 12);
+    if (!(a & 0x01)) goto MV2x6;                     /* '0' */
+#endif
     T(13 + 4 + 12 - 5);
     if (!M(KempJoystickIndicator)) return MV2x7();
     T(10);
@@ -567,10 +621,18 @@ static void MoveDrawLightBeam(void)
         if (M(hl) == 0x27) {
             /* The light beam is touching Willy. */
             T(4 + 4 + 4 * 17 + 12);
+#ifndef MM128
             DecreaseAirRemaining();
             DecreaseAirRemaining();
             DecreaseAirRemaining();
             DecreaseAirRemaining();
+#else
+            /* The menu's "infinite air" turns these four CALLs into NOPs. */
+            for (int i = 0; i < 4; i++) {
+                if (M(PatchBeamCalls + 3 * i) == 0xCD) DecreaseAirRemaining();
+                else T(-17 + 12);
+            }
+#endif
         } else {
             T(13 + 7 + 12);
             if (M(BackgroundTile) != M(hl)) {
@@ -1087,7 +1149,7 @@ static int IsEnterOrFireButtonPressed(void)
         if (a & 0x10) { T(6); return 1; }
     }
     T(10);
-    uint8_t a = in_port(0xBFFE);
+    uint8_t a = in_port(ENTER_PORT);
     T(7 + 7 + 10);
     return (a & 1) != 1;
 }
@@ -1137,6 +1199,271 @@ static int PlayTheThemeTune(uint16_t iy)
     }
 }
 
+#ifdef MM128
+/* ------------------------------------------------------------------------ */
+/* Unpack (37835) - Manic Miner 128's LZ unpacker.                          */
+/* HL = packed data, DE = destination, BC = bytes to produce, A = 0 to      */
+/* enable the hooks that make a 1024-byte cavern stream continue from      */
+/* 0x6000 at 0x8000 (attribute buffer 0x5E00, then cavern definition), or   */
+/* 201 (RET) to disable them.                                               */
+/* ------------------------------------------------------------------------ */
+static inline void unpack_hook_de(uint16_t *de)
+{
+    T(17);                                    /* CALL 37962 */
+    if (M(UnpackHookDE) == 0xC9) { T(10); return; }
+    T(4 + 11 + 4 + 7 + 7);
+    if ((*de >> 8) == 96) { *de = 32768; T(10 - 5); }
+    T(10 + 10);
+}
+
+static inline void unpack_hook_hl(uint16_t *hl)
+{
+    T(17);                                    /* CALL 37974 */
+    if (M(UnpackHookHL) == 0xC9) { T(10); return; }
+    T(4 + 11 + 4 + 7 + 7);
+    if ((*hl >> 8) == 96) { *hl = 32768; T(10 - 5); }
+    T(10 + 10);
+}
+
+static void UnpackData(uint16_t hl, uint16_t de, uint16_t bc, uint8_t a)
+{
+    M(UnpackHookDE) = a;
+    M(UnpackHookHL) = a;
+    M(UnpackMarker) = M(hl);
+    hl++;
+    T(13 + 13 + 7 + 6 + 13);
+    for (;;) {
+        /* 37846 */
+        uint8_t v = M(hl);
+        T(7 + 17 + 7 + 10 + 7);
+        if (v == M(UnpackMarker)) {
+            /* 37862: escape */
+            hl++;
+            v = M(hl);
+            T(6 + 7 + 4 + 12 - 5);
+            if (v == 0) {
+                T(13 + 12);
+                /* 37852: LDI copies the byte at HL (the 0) */
+            } else {
+                /* 37872: back-reference */
+                uint16_t ix = bc;
+                bc = v & 63;
+                uint16_t iy = hl;
+                hl = (uint16_t)(hl + 2);
+                uint16_t next = hl;
+                uint16_t offset = (uint16_t)((M(iy) | (M((uint16_t)(iy + 1)) << 8)) >> 6);
+                uint16_t src = (uint16_t)(de - offset);
+                T(15 + 14 + 7 + 7 + 4 + 15 + 14 + 6 + 6 + 11 + 11 + 11 + 10 + 19 + 19 + 11 + 7
+                  + 6 * (8 + 8 + 13) - 5 + 10 + 4 + 4 + 15 + 13 + 4 + 7);
+                if (M(UnpackHookDE) == 0) {
+                    uint8_t h = (uint8_t)(src >> 8);
+                    T(4 + 7 + 17);
+                    if (h == 127) { h = 95; T(7 + 4 + 10); }
+                    T(7 + 10);
+                    if (h == 126) { h = 94; T(7 + 4 + 10 + 7); }
+                    src = (uint16_t)((h << 8) | (src & 0xFF));
+                }
+                T(10);
+                for (;;) {
+                    /* 37927: LDI */
+                    M(de) = M(src);
+                    de++; src++; bc--;
+                    T(16);
+                    unpack_hook_de(&de);
+                    unpack_hook_hl(&src);
+                    ix--;
+                    T(10 + 8 + 8 + 4 + 12);
+                    if (ix == 0) { T(-5 + 10 + 10); return; }
+                    T(4 + 4 + 12);
+                    if (bc == 0) break;
+                }
+                hl = next;
+                bc = ix;
+                T(10 + 15 + 10 + 12);
+                /* 37857 */
+                T(4 + 4 + 12);
+                if (bc == 0) { T(10); return; }
+                continue;
+            }
+        }
+        /* 37852: LDI + hook */
+        M(de) = M(hl);
+        de++; hl++; bc--;
+        T(16);
+        unpack_hook_de(&de);
+        /* 37857 */
+        T(4 + 4 + 12);
+        if (bc == 0) { T(-5 + 10); return; }
+    }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Mihai Novitchi's in-game menu (38051), opened with '1'.                  */
+/* The options work by patching the game's own code, as in the original:    */
+/*   lives:  DEC (HL) at PatchLivesDec <-> NOP                              */
+/*   air:    CALL DecreaseAirRemaining at PatchAirCall <-> LD A,1 / OR A,   */
+/*           and the light beam's four CALLs at PatchBeamCalls <-> NOPs     */
+/*   music:  MusicOn flag, EI, or DI after resetting the player             */
+/* ------------------------------------------------------------------------ */
+static uint16_t MenuScreenAddr(uint8_t a)          /* 38383 */
+{
+    uint8_t h = (uint8_t)((a & 24) | 64);
+    uint8_t l = rotr((uint8_t)(a & 7), 3);
+    T(11 + 7 + 7 + 4 + 10 + 7 + 4 * 3 + 4 + 10);
+    return (uint16_t)((h << 8) | l);
+}
+
+static void MenuPrint(uint8_t row, uint8_t len, uint16_t ix)    /* 38371 */
+{
+    T(17);
+    uint16_t hl = MenuScreenAddr(row);
+    T(10 + 11 + 4 + 17);
+    PrintAMessage(ix, (uint16_t)(hl + 5), len);
+    T(10);
+}
+
+static int MenuToggle(uint16_t hl)                  /* 38345: 1 = now YES */
+{
+    T(7 + 7 + 12);
+    if (M(hl) == 78) {
+        M(hl) = 89; M(hl + 1) = 69; M(hl + 2) = 83;    /* "YES" */
+        T(-5 + 10 + 6 + 10 + 6 + 10 + 4 + 10);
+        return 1;
+    }
+    M(hl) = 78; M(hl + 1) = 79; M(hl + 2) = 32;        /* "NO " */
+    T(10 + 6 + 10 + 6 + 10 + 4 + 4 + 10);
+    return 0;
+}
+
+static void CheatMenu(void)
+{
+    /* Paint the menu box attributes: 7 rows x 24 cells of 71 from (2,4). */
+    uint16_t hl = 22596;
+    T(10 + 7);
+    for (int b = 0; b < 7; b++) {
+        T(11 + 11 + 10 + 6 + 10 + 10);
+        fill(hl, 71, 23);
+        hl = (uint16_t)(hl + 32);
+        T(10 + 11 + 10 + 13);
+    }
+    /* Draw the box outline. */
+    T(7 + 7);
+    for (uint8_t c = 0; c < 7; c++) {
+        T(11 + 4 + 7 + 17);
+        uint16_t row = MenuScreenAddr((uint8_t)(c + 2));
+        T(7);
+        for (uint8_t b = 8; b; b--) {
+            uint16_t p = (uint16_t)(row + 4);
+            uint8_t d = 0;
+            T(11 + 11 + 10 + 11 + 7 + 4 + 7 + 12);
+            if (c == 0 && b == 8) d = 255;
+            else if (c == 6 && b == 1) d = 255;
+            T(4 + 7 + 7 + 7 + 7 + 7);
+            for (uint8_t k = 24; k; k--) {
+                uint8_t e = d;
+                if (k == 24) e |= 128;
+                if (k == 1) e |= 1;
+                M(p) = e;
+                p++;
+                T(4 + 4 + 7 + 12 + 4 + 7 + 12 + 7 + 6 + 13);
+            }
+            row = (uint16_t)(row + 0x100);
+            T(10 + 4 + 10 + 13);
+        }
+        T(10 + 4 + 13);
+    }
+
+    for (;;) {
+        /* 38155: print the options */
+        T(7 + 7 + 14);
+        MenuPrint(3, 21, MenuText);
+        T(7 + 7 + 14);
+        MenuPrint(4, 19, MenuText + 21);
+        T(7 + 7 + 14);
+        MenuPrint(5, 12, MenuText + 40);
+        T(7 + 7 + 14);
+        MenuPrint(7, 13, MenuText + 52);
+        /* Pause: LD BC,28672 / DEC BC / LD A,B / OR C / JR NZ */
+        T(10 + 28672u * 26 - 5);
+
+        for (;;) {
+            /* 38207: read keys 1-2-3-4-5 */
+            T(10);
+            uint8_t keys = in_port(0xF7FE);
+            T(4 + 7 + 4 + 12);
+            if (!(keys & 1)) {
+                T(10 + 17);
+                if (MenuToggle(MenuLivesYesNo)) M(PatchLivesDec) = 0;
+                else M(PatchLivesDec) = 53;
+                T(12 + 10 + 10 + 12);
+                break;
+            }
+            T(7 + 4 + 12);
+            if (!(keys & 2)) {
+                T(10 + 17);
+                if (MenuToggle(MenuAirYesNo)) {
+                    /* 38281: infinite air */
+                    M(PatchAirCall) = 62; M(PatchAirCall + 1) = 1; M(PatchAirCall + 2) = 183;
+                    T(12 + 10 + 10 + 6 + 10 + 6 + 10 + 10 + 10 + 11 + 10 + 6 + 10);
+                    fill(PatchBeamCalls, 0, 11);
+                    T(10);
+                } else {
+                    uint16_t a = PatchAirCall;
+                    M(a) = 205; M(a + 1) = DecreaseAirRemaining_CODE & 0xFF; M(a + 2) = DecreaseAirRemaining_CODE >> 8;
+                    for (int i = 0; i < 4; i++) {
+                        uint16_t q = (uint16_t)(PatchBeamCalls + 3 * i);
+                        M(q) = 205; M(q + 1) = DecreaseAirRemaining_CODE & 0xFF; M(q + 2) = DecreaseAirRemaining_CODE >> 8;
+                    }
+                    T(7 + 10 + 10 + 10 + 6 + 7 + 6 + 7 + 10 + 7 + 4 * (10 + 6 + 7 + 6 + 7 + 6 + 13) + 12);
+                }
+                break;
+            }
+            T(7 + 4 + 12);
+            if (!(keys & 4)) {
+                T(10 + 17);
+                if (MenuToggle(MenuMusicYesNo)) {
+                    M(MusicOn) = 1;
+                    zx_iff = 1;
+                    T(12 + 7 + 13 + 4 + 10);
+                } else {
+                    M(MusicOn) = 0;
+                    zx_iff = 0;
+                    T(7 + 13 + 4 + 10);
+                    /* JP (MenuMusicOffJump) -> 40016: CALL 49152; DI; JP 38155 */
+                    T(17);
+                    st_init();
+                    zx_iff = 0;
+                    T(4 + 10);
+                }
+                break;
+            }
+            T(7 + 4 + 10);
+            if (!(keys & 8)) { T(10); return; }       /* '4': resume */
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------ */
+/* IM2 interrupt: vector table at 39680 -> 40092: push everything,          */
+/* CALL 49158 (Sound Tracker play), pop everything, EI, RET.                */
+/* ------------------------------------------------------------------------ */
+static void mm128_interrupt(void)
+{
+    if (zx_im != 2) {
+        /* IM 1 would run the ROM's handler; only possible in the few
+         * T-states between the player's EI and the game's DI on the very
+         * first title screen. Nothing of the game's state is involved. */
+        return;
+    }
+    zx_iff = 0;
+    T(19 + 11 * 4 + 15 * 2 + 17 + 10);
+    st_play();
+    if (mm_music_tick_hook) mm_music_tick_hook();
+    T(14 * 2 + 10 * 4 + 4 + 10);
+    zx_iff = 1;
+}
+#endif
+
 /* ------------------------------------------------------------------------ */
 /* The game: Start, main loop, losing a life, game over, next cavern.       */
 /* ------------------------------------------------------------------------ */
@@ -1146,6 +1473,10 @@ void mm_run(void)
     uint16_t hl;
 
     /* AppEntry: DI; LD SP,MemTop; JP Start */
+    zx_iff = 0;
+#ifdef MM128
+    zx_int_hook = mm128_interrupt;
+#endif
     T(4 + 10 + 10);
 
 Start:
@@ -1161,6 +1492,7 @@ Start:
     /* Prepare the screen. */
     T(10 + 10 + 10);
     fill(0x4000, 0x00, 0x17FF);
+#ifndef MM128
     T(10 + 10 + 10);
     ldir(TitleScreenDataTop, 0x4000, 0x1000);
     T(10 + 10 + 7 + 17);
@@ -1169,9 +1501,18 @@ Start:
     ldir(TheFinalBarrierData, 0x5800, 0x100);
     T(10 + 10);
     ldir(BottomAttributes, 0x5900, 0x200);
+#else
+    T(10 + 10 + 10 + 7 + 17);
+    UnpackData(PackedTitleScreen, 0x4000, 0x1000, 201);
+    T(10 + 10 + 7 + 17);
+    DrawASprite(0x483D, WillySpriteData1, 0);
+    T(10 + 10 + 10 + 7 + 17);
+    UnpackData(PackedTitleAttributes, 0x5800, 768, 201);
+#endif
 
     /* Check whether there is a joystick connected. */
     T(10 + 4 + 4);
+    zx_iff = 0;                                      /* DI */
     a = 0;
     for (int i = 0; i < 256; i++) {
         a |= in_port((uint16_t)(((uint8_t)(0 - i)) << 8 | 0x1F));
@@ -1182,15 +1523,33 @@ Start:
 
     /* Play the theme tune and check for keypresses. */
     T(14 + 17);
+#ifdef MM128
+    /* CALL (TitleTuneCall) -> 40023: CALL 49152 (reset the AY player);
+     * DI; CALL PlayTheThemeTune; RET */
+    T(17);
+    st_init();
+    zx_iff = 0;
+    T(4 + 17);
+    a = (uint8_t)PlayTheThemeTune(TitleScreenTuneData);
+    T(10);
+    if (a) { T(10); goto Start6; }
+#else
     if (PlayTheThemeTune(TitleScreenTuneData)) { T(10); goto Start6; }
+#endif
     T(10 + 4 + 13);
     M(MultiUseCoordinateStore) = 0;
 
     for (;;) {
         /* Start4: scroll the banner and animate Willy. */
         a = M(MultiUseCoordinateStore);
+#ifndef MM128
         T(13 + 14 + 8 + 10 + 7 + 17);
         PrintAMessage((uint16_t)(TitleScreenBanner | a), 0x5060, 0x20);
+#else
+        /* The banner is no longer page-aligned: IX = banner + index. */
+        T(13 + 14 + 8 + 8 + 7 + 8 + 8 + 10 + 7 + 17);
+        PrintAMessage((uint16_t)(TitleScreenBanner + a), 0x5060, 0x20);
+#endif
         a = (uint8_t)(M(MultiUseCoordinateStore) & 0x06);
         a = rotr(a, 3);
         T(13 + 7 + 4 * 3 + 4 + 7 + 10 + 7 + 17);
@@ -1200,7 +1559,7 @@ Start:
         for (uint8_t c = 100; c; c--)
             T(djnz_cost(0) + 4 + 12);
         T(-5 + 10);
-        a = in_port(0xBFFE);
+        a = in_port(ENTER_PORT);
         T(7 + 7 + 12);
         if ((a & 1) != 1) goto Start6;
         a = (uint8_t)(M(MultiUseCoordinateStore) + 1);
@@ -1219,12 +1578,33 @@ Start6:
 Start7:
     /* Entry point used when teleporting into a cavern or reinitialising the
      * current cavern after Willy has lost a life. */
+#ifndef MM128
     a = (uint8_t)((M(CurrentCavernNumber) << 2) + (CentralCavernData >> 8));
     hl = (uint16_t)(a << 8);
     T(13 + 8 + 8 + 7 + 4 + 7 + 10 + 10);
     ldir(hl, EmptyCavernAttributeBuffer, 0x200);
     T(10 + 10);
     ldir((uint16_t)(hl + 0x200), CavernName, 0x200);
+#else
+    /* Restart the AY tune, point the IM2 vector table at the player's
+     * interrupt handler and enable interrupts if the music is on. */
+    T(17);
+    st_init();
+    T(10 + 10 + 10 + 10);
+    fill(IM2Table, 156, 256);
+    zx_iff = 0;                                      /* DI */
+    zx_im = 2;                                       /* LD A,155; LD I,A; IM 2 */
+    T(4 + 7 + 9 + 8 + 13 + 4 + 12);
+    if (M(MusicOn)) { zx_iff = 1; T(4 - 5); }        /* EI */
+    /* Unpack the cavern: 512 bytes to 0x5E00, then 512 to 0x8000. */
+    a = M(CurrentCavernNumber);
+    {
+        uint16_t entry = (uint16_t)(CavernTable + (uint8_t)(a + a + a));
+        hl = (uint16_t)(M(entry) | (M((uint16_t)(entry + 1)) << 8));
+    }
+    T(13 + 4 + 8 + 4 + 4 + 7 + 10 + 11 + 15 + 14 + 19 + 19 + 10 + 7 + 10 + 17);
+    UnpackData(hl, EmptyCavernAttributeBuffer, 1024, 0);
+#endif
     T(17);
     DrawCurrentCavernToScreenBuffer();
     T(10 + 10 + 10);
@@ -1275,7 +1655,7 @@ Start7:
         }
         /* MainLoop3: draw a boot if cheat mode has been activated. */
         T(13 + 7 + 12);
-        if (M(KeyCounter) == 7) {
+        if (M(KeyCounter) == CHEAT_DONE) {
             T(10 + 7 + 17 - 5);
             DrawASprite(hl, BootGraphicData, 0);
         }
@@ -1364,8 +1744,18 @@ MainLoop6:
         PrintAMessage(Score2 + 3, 20602, 6);
         T(14 + 10 + 7 + 17);
         PrintAMessage(HighScore, 20587, 6);
+#ifndef MM128
         T(17 + 10);
         if (DecreaseAirRemaining()) goto MainLoop19;
+#else
+        /* The menu's "infinite air" replaces this CALL with LD A,1 / OR A. */
+        if (M(PatchAirCall) == 0xCD) {
+            T(17 + 10);
+            if (DecreaseAirRemaining()) goto MainLoop19;
+        } else {
+            T(7 + 4 + 10);
+        }
+#endif
 
         /* SHIFT and SPACE together quit the game. */
         {
@@ -1408,7 +1798,15 @@ MainLoop6:
         }
         /* MainLoop11 */
         T(12 + 12);
+#ifdef MM128
+        /* The beeper tune is gone (the AY plays from the interrupt); the
+         * H-J-K-L-ENTER toggle still flips the flag but nothing reads it:
+         * BIT 1,(HL) / JR NZ,next. */
+        T(-12 + 7);
+        if (0) {
+#else
         if (!(M(MusicFlags) & 2)) {
+#endif
             /* Play a note of the in-game music. */
             a = (uint8_t)(M(MusicNoteIndex) + 1);
             M(MusicNoteIndex) = a;
@@ -1454,9 +1852,9 @@ MainLoop6:
         T(10);
         a = in_port(0xEFFE);
         T(8 + 10);
-        if (!(a & 0x10)) {
+        if (!(a & TELEPORT_BIT)) {
             T(13 + 7 + 10);
-            if (M(KeyCounter) == 7) {
+            if (M(KeyCounter) == CHEAT_DONE) {
                 T(7);
                 a = in_port(0xF7FE);
                 a = (uint8_t)((~a) & 0x1F);
@@ -1469,19 +1867,19 @@ MainLoop6:
             }
         }
 
-        /* MainLoop16: the 6031769 keys. */
+        /* MainLoop16: the cheat-code keys (6031769 / TYPEWRITER). */
         T(13 + 7 + 10);
-        if (M(KeyCounter) == 7) continue;
+        if (M(KeyCounter) == CHEAT_DONE) continue;
         {
             a = rotl(M(KeyCounter), 1);
             uint16_t ix = (uint16_t)(KP6031769x6 + a);
             T(4 + 4 + 7 + 14 + 15 + 10);
-            a = in_port(0xF7FE) & 0x1F;
+            a = in_port(CHEAT_ROW1) & 0x1F;
             T(7 + 19 + 12);
             if (a == M(ix)) {
                 /* MainLoop17 */
                 T(7);
-                a = in_port(0xEFFE) & 0x1F;
+                a = in_port(CHEAT_ROW2) & 0x1F;
                 T(7 + 19 + 12);
                 if (a == M((uint16_t)(ix + 1))) {
                     M(KeyCounter)++;
@@ -1528,6 +1926,10 @@ MainLoop19:
         /* Finally, check whether any lives remain. */
         T(10 + 7 + 4 + 10);
         if (!M(LivesRemaining)) goto DisplayGameOver;
+#ifdef MM128
+        /* The menu's "infinite lives" replaces this DEC (HL) with NOP. */
+        if (M(PatchLivesDec) == 0x35)
+#endif
         M(LivesRemaining)--;
         T(11 + 10);
         goto Start7;
@@ -1614,7 +2016,7 @@ MoveToTheNextCavern:
         T(13 + 4 + 10);
         if (!M(GameModeIndicator)) {
             T(13 + 7 + 12);
-            if (M(KeyCounter) != 7) {
+            if (M(KeyCounter) != CHEAT_DONE) {
                 /* Willy has made it through The Final Barrier without cheating. */
                 T(7 + 10 + 10 + 17);
                 DrawASprite(16467, WillySpriteData2, 0);

@@ -20,6 +20,11 @@ int       zx_beep_count;
 uint8_t   zx_beep_level;
 
 void (*zx_frame_hook)(void);
+int  zx_iff, zx_im;
+void (*zx_int_hook)(void);
+zx_ay_t zx_ay_log[ZX_AY_MAX];
+int     zx_ay_count;
+uint8_t zx_ay_regs[16];
 
 void zx_keys_clear(void)
 {
@@ -35,6 +40,23 @@ void zx_reset(void)
     zx_border = 0;
     zx_beep_count = 0;
     zx_beep_level = 0;
+    zx_iff = 0;
+    zx_im = 1;
+    zx_ay_count = 0;
+    memset(zx_ay_regs, 0, sizeof zx_ay_regs);
+}
+
+void zx_ay_write(uint8_t reg, uint8_t val)
+{
+    reg &= 15;
+    zx_ay_regs[reg] = val;
+    if (zx_ay_count < ZX_AY_MAX) {
+        uint64_t frame_start = zx_next_frame - ZX_T_PER_FRAME;
+        zx_ay_log[zx_ay_count].t = (uint32_t)(zx_t - frame_start);
+        zx_ay_log[zx_ay_count].reg = reg;
+        zx_ay_log[zx_ay_count].val = val;
+        zx_ay_count++;
+    }
 }
 
 void zx_key(int row, int bit, int down)
@@ -45,16 +67,34 @@ void zx_key(int row, int bit, int down)
 
 void zx_frame(void)
 {
+    static int in_frame;
+    if (in_frame) return;            /* the interrupt handler ticks the clock too */
+    in_frame = 1;
     while (zx_t >= zx_next_frame) {
         if (zx_frame_hook)
             zx_frame_hook();
-        /* The hook consumed this frame's beeper events. */
+        /* The hook consumed this frame's beeper and AY events. */
         zx_beep_count = 0;
+        zx_ay_count = 0;
         zx_next_frame += ZX_T_PER_FRAME;
+        /* New frame: the ULA raises /INT. */
+        if (zx_int_hook && zx_iff)
+            zx_int_hook();
     }
+    in_frame = 0;
 }
 
+uint8_t (*zx_in_filter)(uint16_t port, uint8_t value);
+
+static uint8_t zx_in_raw(uint16_t port);
+
 uint8_t zx_in(uint16_t port)
+{
+    uint8_t v = zx_in_raw(port);
+    return zx_in_filter ? zx_in_filter(port, v) : v;
+}
+
+static uint8_t zx_in_raw(uint16_t port)
 {
     /* Kempston interface: port 0x1F (only A5 decoded on the real thing,
      * but the game always uses 0x1F). Bits 5-7 read as 0 when present. */

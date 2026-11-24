@@ -30,6 +30,13 @@
 #include "mm_mem.h"
 #include "mm_game.h"
 #include "mm_font.h"
+#ifdef MM128
+#include "ay.h"
+#include "mm128_load.h"
+#define GAME_TITLE "Manic Miner 128"
+#else
+#define GAME_TITLE "Manic Miner"
+#endif
 
 #define AUDIO_RATE   48000
 #define WINDOW_W     640
@@ -51,6 +58,9 @@ static int16_t audio_buf[2 * 2048];
 static double  samples_carry;
 static uint8_t frame_start_level;
 static float   hp_prev_in, hp_prev_out;
+#ifdef MM128
+static ay_t    ay;
+#endif
 
 static float level_value(uint8_t level)
 {
@@ -68,6 +78,9 @@ static void render_audio(void)
     double t_per_sample = (double)ZX_T_PER_FRAME / n;
     int ev = 0;
     uint8_t level = frame_start_level;
+#ifdef MM128
+    int ay_ev = 0;
+#endif
     for (int i = 0; i < n; i++) {
         /* Box-filter the speaker level over this sample's T-state span. */
         double t0 = i * t_per_sample, t1 = t0 + t_per_sample, t = t0;
@@ -81,6 +94,14 @@ static void render_audio(void)
         }
         acc += level_value(level) * (t1 - t);
         float x = (float)(acc / t_per_sample);
+#ifdef MM128
+        /* AY register writes take effect at the sample they fall in. */
+        while (ay_ev < zx_ay_count && zx_ay_log[ay_ev].t < t1) {
+            ay_write(&ay, zx_ay_log[ay_ev].reg, zx_ay_log[ay_ev].val);
+            ay_ev++;
+        }
+        x = x * 0.6f + ay_sample(&ay) * 1.6f;
+#endif
         /* DC-blocking high-pass so a speaker left "on" is silent. */
         float y = x - hp_prev_in + 0.995f * hp_prev_out;
         hp_prev_in = x;
@@ -91,6 +112,9 @@ static void render_audio(void)
         audio_buf[2 * i] = audio_buf[2 * i + 1] = (int16_t)s;
     }
     frame_start_level = zx_beep_level;
+#ifdef MM128
+    while (ay_ev < zx_ay_count) { ay_write(&ay, zx_ay_log[ay_ev].reg, zx_ay_log[ay_ev].val); ay_ev++; }
+#endif
 
     if (audio_dev)
         SDL_QueueAudio(audio_dev, audio_buf, (Uint32)(n * 2 * sizeof(int16_t)));
@@ -118,15 +142,29 @@ static void set_bit(uint8_t *rows, int row, int bit, int down)
     else      rows[row] &= (uint8_t)~(1u << bit);
 }
 
-/* Cheat-code macro: types 6031769 one key at a time, then teleports. */
-static const char cheat_digits[] = "6031769";
+/* Cheat-code macro: types the cheat one key at a time. */
+static const struct { uint8_t row, bit; } cheat_keys[] = {
+#ifndef MM128
+    /* 6031769 */
+    { ZX_ROW_0_6, 4 }, { ZX_ROW_0_6, 0 }, { ZX_ROW_1_5, 2 }, { ZX_ROW_1_5, 0 },
+    { ZX_ROW_0_6, 3 }, { ZX_ROW_0_6, 4 }, { ZX_ROW_0_6, 1 },
+#else
+    /* TYPEWRITER */
+    { ZX_ROW_Q_T, 4 }, { ZX_ROW_P_Y, 4 }, { ZX_ROW_P_Y, 0 }, { ZX_ROW_Q_T, 2 }, { ZX_ROW_Q_T, 1 },
+    { ZX_ROW_Q_T, 3 }, { ZX_ROW_P_Y, 2 }, { ZX_ROW_Q_T, 4 }, { ZX_ROW_Q_T, 2 }, { ZX_ROW_Q_T, 3 },
+#endif
+};
+#define CHEAT_LEN ((int)(sizeof cheat_keys / sizeof cheat_keys[0]))
+#ifndef MM128
+#define TELEPORT_ROW ZX_ROW_0_6
+#define TELEPORT_BIT 4          /* hold '6' */
+#define CHEAT_DONE   7
+#else
+#define TELEPORT_ROW ZX_ROW_0_6
+#define TELEPORT_BIT 1          /* hold '9' */
+#define CHEAT_DONE   10
+#endif
 static int macro_step = -1, macro_timer, teleport_timer, teleport_target;
-
-static void digit_to_key(uint8_t *rows, int d)
-{
-    if (d >= 1 && d <= 5) set_bit(rows, ZX_ROW_1_5, d - 1, 1);
-    else set_bit(rows, ZX_ROW_0_6, d == 0 ? 0 : 10 - d, 1);
-}
 
 static void run_macros(void)
 {
@@ -134,15 +172,15 @@ static void run_macros(void)
     if (macro_step >= 0) {
         /* Hold each digit for 8 frames then release for 8: the game checks
          * the keys once per main-loop pass (~3.5 frames). */
-        if (macro_timer < 8) digit_to_key(macro_keys, cheat_digits[macro_step] - '0');
+        if (macro_timer < 8) set_bit(macro_keys, cheat_keys[macro_step].row, cheat_keys[macro_step].bit, 1);
         if (++macro_timer >= 16) {
             macro_timer = 0;
-            if (++macro_step >= 7) macro_step = -1;
+            if (++macro_step >= CHEAT_LEN) macro_step = -1;
         }
     }
     if (teleport_timer > 0) {
-        /* '6' plus the binary cavern number on keys 1-5. */
-        set_bit(macro_keys, ZX_ROW_0_6, 4, 1);
+        /* '6' ('9' on 128) plus the binary cavern number on keys 1-5. */
+        set_bit(macro_keys, TELEPORT_ROW, TELEPORT_BIT, 1);
         for (int b = 0; b < 5; b++)
             if (teleport_target & (1 << b)) set_bit(macro_keys, ZX_ROW_1_5, b, 1);
         teleport_timer--;
@@ -158,9 +196,16 @@ static void pad_button(int button, int down)
         break;
     case SDL_CONTROLLER_BUTTON_START:
         set_bit(pad_keys, ZX_ROW_ENTER_H, 0, down);        /* ENTER: start game */
+#ifdef MM128
+        set_bit(pad_keys, ZX_ROW_1_5, 3, down);            /* 4: leave the menu */
+#endif
         break;
     case SDL_CONTROLLER_BUTTON_Y:
+#ifndef MM128
         set_bit(pad_keys, ZX_ROW_ENTER_H, 4, down);        /* H: music on/off */
+#else
+        set_bit(pad_keys, ZX_ROW_1_5, 0, down);            /* 1: menu / lives */
+#endif
         break;
     case SDL_CONTROLLER_BUTTON_X:
         set_bit(pad_keys, ZX_ROW_A_G, 0, down);            /* A: pause */
@@ -172,11 +217,17 @@ static void pad_button(int button, int down)
     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:               /* White on the Xbox pad */
     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:              /* Black on the Xbox pad */
         if (down) {
-            if (mem[KeyCounter] != 7) {
+            if (mem[KeyCounter] != CHEAT_DONE) {
                 if (macro_step < 0) { macro_step = 0; macro_timer = 0; }
             } else {
                 int cav = mem[CurrentCavernNumber];
+#ifndef MM128
                 cav += (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? 1 : 19;
+#else
+                /* Key '1' (bit 0 of the cavern number) also opens the
+                 * options menu in this version, so step by two caverns. */
+                cav = (cav & ~1) + ((button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? 2 : 18);
+#endif
                 teleport_target = cav % 20;
                 teleport_timer = 8;
             }
@@ -191,6 +242,13 @@ static void read_pad_axes(void)
 {
     uint8_t joy = 0;
     int left = 0, right = 0, fire = 0;
+#ifdef MM128
+    if (pad) {
+        /* Menu options 2 (air) and 3 (music) on the triggers. */
+        set_bit(pad_keys, ZX_ROW_1_5, 1, SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000);
+        set_bit(pad_keys, ZX_ROW_1_5, 2, SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000);
+    }
+#endif
     if (pad) {
         int x = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX);
         left  = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT) || x < -12000;
@@ -307,15 +365,38 @@ static void pace(void)
  *   MM_FAST=1              don't pace to real time
  *   MM_EXIT_AFTER=<n>      quit after n frames
  *   MM_SHOTS=<f1,f2,...>   save shot_<frame>.bmp at those frames
- *   MM_ENTER_AT=<f>        hold ENTER for a few frames from frame f */
+ *   MM_ENTER_AT=<f>        hold ENTER for a few frames from frame f
+ *   MM_KEYS=<f>:<c>,...    hold key c ('1'-'9', '0', a-z, or '#' for ENTER)
+ *                          for 10 frames starting at frame f */
 static int  dbg_fast;
 static long dbg_exit_after = -1, dbg_enter_at = -1;
 static const char *dbg_shots;
+static const char *dbg_keys;
+
+static void dbg_key_char(char c, int down)
+{
+    static const char *rows[8] = { "#zxcv", "asdfg", "qwert", "12345", "09876", "poiuy", "\nlkjh", " #mnb" };
+    if (c == '#') { set_bit(kb_keys, ZX_ROW_ENTER_H, 0, down); return; }
+    for (int r = 0; r < 8; r++)
+        for (int b = 0; b < 5; b++)
+            if (rows[r][b] == c) set_bit(kb_keys, r, b, down);
+}
 
 static void debug_frame(void)
 {
     if (dbg_enter_at >= 0)
         set_bit(kb_keys, ZX_ROW_ENTER_H, 0, (long)frame_count >= dbg_enter_at && (long)frame_count < dbg_enter_at + 10);
+    if (dbg_keys) {
+        for (const char *p = dbg_keys; *p; ) {
+            long f = strtol(p, (char **)&p, 10);
+            if (*p != ':' || !p[1]) break;
+            char c = p[1];
+            p += 2;
+            if ((long)frame_count == f) dbg_key_char(c, 1);
+            if ((long)frame_count == f + 10) dbg_key_char(c, 0);
+            if (*p == ',') p++;
+        }
+    }
     if (dbg_shots) {
         char want[32];
         snprintf(want, sizeof want, ",%llu,", (unsigned long long)frame_count);
@@ -397,7 +478,7 @@ int main(int argc, char **argv)
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0)
             return 1;
     }
-    window = SDL_CreateWindow("Manic Miner", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+    window = SDL_CreateWindow(GAME_TITLE, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                               WINDOW_W, WINDOW_H, SDL_WINDOW_SHOWN);
     if (!window) return 1;
     renderer = SDL_CreateRenderer(window, -1, 0);
@@ -421,20 +502,36 @@ int main(int argc, char **argv)
 
     zx_reset();
     memset(mem, 0, sizeof mem);
+#ifdef MM128
+    ay_init(&ay, AY_CLOCK_128K, AUDIO_RATE);
+#endif
 
     /* Optional 48K ROM for the authentic character set. */
     static uint8_t rom[0x4000];
     int have_rom = load_file(DATA_DIR "48.rom", rom, sizeof rom) == (long)sizeof rom;
     mm_install_font(have_rom ? rom : NULL);
 
-    /* The game: a 64K memory image of the original, loaded at address 0. */
     static uint8_t image[65536];
+#ifndef MM128
+    /* The game: a 64K memory image of the original, loaded at address 0. */
     long n = load_file(DATA_DIR "ManicMiner.bin", image, sizeof image);
     if (n != 65536)
         fatal_screen(n < 0 ? "ManicMiner.bin not found." : "ManicMiner.bin is not 64K.",
                      "See README for where to get it.");
     if (image[AppEntry] != 0xF3 || memcmp(image + CentralCavernData + 0x200 + 9, "Central Cavern", 14) != 0)
         fatal_screen("ManicMiner.bin doesn't look", "like Manic Miner (48K).");
+#else
+    /* The game: the original tape, unpacked exactly as its loader does. */
+    static uint8_t tap[65536];
+    long n = load_file(DATA_DIR "ManicMiner128.tap", tap, sizeof tap);
+    if (n < 0)
+        fatal_screen("ManicMiner128.tap not found.", "See README for where to get it.");
+    int r = mm128_build_image(tap, n, image);
+    if (r == MM128_ERR_TAP)
+        fatal_screen("ManicMiner128.tap: not a", "valid TAP file.");
+    if (r != MM128_OK)
+        fatal_screen("Unsupported Manic Miner 128", "tape (SP version needed).");
+#endif
     memcpy(mem + 0x4000, image + 0x4000, 0xC000);   /* keep our ROM area */
 
 #ifndef NXDK
@@ -442,6 +539,7 @@ int main(int argc, char **argv)
     if (getenv("MM_EXIT_AFTER")) dbg_exit_after = atol(getenv("MM_EXIT_AFTER"));
     if (getenv("MM_ENTER_AT")) dbg_enter_at = atol(getenv("MM_ENTER_AT"));
     dbg_shots = getenv("MM_SHOTS");
+    dbg_keys = getenv("MM_KEYS");
 #endif
 
     zx_frame_hook = frame_hook;

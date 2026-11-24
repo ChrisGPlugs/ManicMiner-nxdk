@@ -14,4 +14,7 @@ void mm_run(void);
  * (address 0x870E in the original). Used by the comparison test. */
 extern void (*mm_mainloop_hook)(void);
 
+/* Optional hook called after each AY music tick (MM128 only; test use). */
+extern void (*mm_music_tick_hook)(void);
+
 #endif
