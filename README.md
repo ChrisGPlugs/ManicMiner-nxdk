@@ -66,7 +66,9 @@ Tested to build with clang 18 against nxdk master (November 2026).
 | White | 6031769 | Types the original cheat code (a boot appears next to the lives) |
 | White / Black, with cheat on | 6 + 1–5 | Teleport to the previous / next cavern |
 
-The desktop build maps the PC keyboard straight onto the Spectrum keyboard (arrow keys also work; Esc quits).
+The desktop build maps the PC keyboard onto the Spectrum keyboard (arrow keys also work; Esc quits). The Xbox build uses the controller only.
+
+**How the teleport button works.** The game teleports when its teleport check sees the activator key (`6`, or `9` on Manic Miner 128) together with the cavern number in binary on keys `1`–`5`. Holding those keys down has side effects. On Manic Miner 128, key `1` also opens Mihai's options menu, which would toggle infinite lives and block the teleport for odd-numbered caverns. On both versions, key `5` also means "left". So the button doesn't hold keys. It answers exactly the two port reads the teleport check makes: the `0`–`6` row shows the activator, and the `1`–`5` read that immediately follows it shows the cavern number. Every other read sees `1`–`5` released. The game code is unchanged; the result is the same as a human pressing the keys at exactly the right moment. It fires once per press and reaches every cavern.
 
 ## Desktop build (for development)
 
@@ -135,7 +137,7 @@ Verified the same way as the 48K game ([`tools/difftest128.c`](tools/difftest128
 | X | A | Pause |
 | Back | SHIFT + SPACE | Quit to title |
 | White | TYPEWRITER | Types the cheat code |
-| White / Black, with cheat on | 9 + 1–5 | Teleport two caverns back / forward. Key 1 also opens the menu in this version, so the macro only lands on even-numbered caverns. On the keyboard, any cavern works, but odd ones open the menu first. |
+| White / Black, with cheat on | 9 + 1–5 | Teleport to the previous / next cavern (any cavern; see below) |
 
 ## Credits and licence
 

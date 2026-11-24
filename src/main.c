@@ -156,15 +156,51 @@ static const struct { uint8_t row, bit; } cheat_keys[] = {
 };
 #define CHEAT_LEN ((int)(sizeof cheat_keys / sizeof cheat_keys[0]))
 #ifndef MM128
-#define TELEPORT_ROW ZX_ROW_0_6
 #define TELEPORT_BIT 4          /* hold '6' */
 #define CHEAT_DONE   7
 #else
-#define TELEPORT_ROW ZX_ROW_0_6
 #define TELEPORT_BIT 1          /* hold '9' */
 #define CHEAT_DONE   10
 #endif
-static int macro_step = -1, macro_timer, teleport_timer, teleport_target;
+static int macro_step = -1, macro_timer;
+
+/* Teleport macro. The game's teleport check reads the 0-6 row (activator
+ * '6', or '9' on Manic Miner 128) and then, immediately after, the 1-5 row
+ * for the cavern number. Rather than holding keys down, the macro answers
+ * exactly that pair of port reads: the activator shows as pressed on 0-6
+ * row reads, and the cavern number appears only on the 1-5 read that
+ * directly follows one of those. Every other read of the 1-5 row sees the
+ * keys up, so on Manic Miner 128 key '1' never opens Mihai's options menu
+ * and key '5' never nudges Willy left. One teleport per press. */
+static int teleport_pending, teleport_target, teleport_frames;
+static uint16_t last_in_port;
+static int last_in_was_forced_activator;
+
+static uint8_t teleport_in_filter(uint16_t port, uint8_t v)
+{
+    int after_activator = (last_in_port == 0xEFFE) && last_in_was_forced_activator;
+    last_in_port = port;
+    last_in_was_forced_activator = 0;
+    if (!teleport_pending) return v;
+    if (port == 0xEFFE) {
+        last_in_was_forced_activator = 1;
+        return (uint8_t)(v & ~(1u << TELEPORT_BIT));
+    }
+    if (port == 0xF7FE && after_activator) {
+        teleport_pending = 0;
+        return (uint8_t)((v & 0xE0) | (0x1F & ~teleport_target));
+    }
+    return v;
+}
+
+static void start_teleport(int forward)
+{
+    if (mem[KeyCounter] != CHEAT_DONE) return;
+    int cav = mem[CurrentCavernNumber] + (forward ? 1 : 19);
+    teleport_target = cav % 20;
+    teleport_pending = 1;
+    teleport_frames = 0;
+}
 
 static void run_macros(void)
 {
@@ -178,13 +214,10 @@ static void run_macros(void)
             if (++macro_step >= CHEAT_LEN) macro_step = -1;
         }
     }
-    if (teleport_timer > 0) {
-        /* '6' ('9' on 128) plus the binary cavern number on keys 1-5. */
-        set_bit(macro_keys, TELEPORT_ROW, TELEPORT_BIT, 1);
-        for (int b = 0; b < 5; b++)
-            if (teleport_target & (1 << b)) set_bit(macro_keys, ZX_ROW_1_5, b, 1);
-        teleport_timer--;
-    }
+    /* Give up if the game never reached its teleport check (e.g. a
+     * teleport requested on the title screen or during the game-over
+     * sequence). */
+    if (teleport_pending && ++teleport_frames > 25) teleport_pending = 0;
 }
 
 static void pad_button(int button, int down)
@@ -220,16 +253,7 @@ static void pad_button(int button, int down)
             if (mem[KeyCounter] != CHEAT_DONE) {
                 if (macro_step < 0) { macro_step = 0; macro_timer = 0; }
             } else {
-                int cav = mem[CurrentCavernNumber];
-#ifndef MM128
-                cav += (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? 1 : 19;
-#else
-                /* Key '1' (bit 0 of the cavern number) also opens the
-                 * options menu in this version, so step by two caverns. */
-                cav = (cav & ~1) + ((button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? 2 : 18);
-#endif
-                teleport_target = cav % 20;
-                teleport_timer = 8;
+                start_teleport(button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
             }
         }
         break;
@@ -367,11 +391,24 @@ static void pace(void)
  *   MM_SHOTS=<f1,f2,...>   save shot_<frame>.bmp at those frames
  *   MM_ENTER_AT=<f>        hold ENTER for a few frames from frame f
  *   MM_KEYS=<f>:<c>,...    hold key c ('1'-'9', '0', a-z, or '#' for ENTER)
- *                          for 10 frames starting at frame f */
+ *                          for 10 frames starting at frame f
+ *   MM_TELEPORT_AT=<f>,... press Black (teleport forward) at frame f
+ *   MM_REPORT=1            print cavern / cheat / menu-patch state on exit */
 static int  dbg_fast;
 static long dbg_exit_after = -1, dbg_enter_at = -1;
 static const char *dbg_shots;
 static const char *dbg_keys;
+static const char *dbg_teleport;
+
+static void dbg_report(void)
+{
+    fprintf(stderr, "frame %llu cavern %d cheat %d lives %d",
+            (unsigned long long)frame_count, mem[CurrentCavernNumber], mem[KeyCounter], mem[LivesRemaining]);
+#ifdef MM128
+    fprintf(stderr, " lives-patch %d (53 = normal) menu-text '%.3s'", mem[PatchLivesDec], (const char *)mem + MenuLivesYesNo);
+#endif
+    fprintf(stderr, "\n");
+}
 
 static void dbg_key_char(char c, int down)
 {
@@ -411,6 +448,13 @@ static void debug_frame(void)
             SDL_FreeSurface(s);
         }
     }
+    if (dbg_teleport) {
+        char want[32], list[512];
+        snprintf(want, sizeof want, ",%llu,", (unsigned long long)frame_count);
+        snprintf(list, sizeof list, ",%s,", dbg_teleport);
+        if (strstr(list, want)) start_teleport(1);
+    }
+    if (getenv("MM_REPORT") && frame_count % 100 == 0) dbg_report();
     if (dbg_exit_after >= 0 && (long)frame_count >= dbg_exit_after) exit(0);
 }
 #endif
@@ -540,8 +584,10 @@ int main(int argc, char **argv)
     if (getenv("MM_ENTER_AT")) dbg_enter_at = atol(getenv("MM_ENTER_AT"));
     dbg_shots = getenv("MM_SHOTS");
     dbg_keys = getenv("MM_KEYS");
+    dbg_teleport = getenv("MM_TELEPORT_AT");
 #endif
 
+    zx_in_filter = teleport_in_filter;
     zx_frame_hook = frame_hook;
     mm_run();          /* never returns */
     return 0;
