@@ -1,0 +1,26 @@
+# Desktop build (Linux/macOS/MSYS2) for development and testing.
+#
+#   make -f Makefile.host           # SDL2 desktop build: ./manicminer
+#   make -f Makefile.host difftest  # check the C port against the Z80 original
+#   make -f Makefile.host test      # run the comparison (needs ManicMiner.bin)
+
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+SDL_CFLAGS := $(shell pkg-config --cflags sdl2 2>/dev/null || sdl2-config --cflags)
+SDL_LIBS   := $(shell pkg-config --libs sdl2 2>/dev/null || sdl2-config --libs)
+
+GAME_SRCS = src/zx.c src/mm_game.c src/mm_font.c
+
+manicminer: src/main.c $(GAME_SRCS) src/*.h
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ src/main.c $(GAME_SRCS) $(SDL_LIBS)
+
+difftest: tools/difftest.c $(GAME_SRCS) tools/z80ref/z80.c src/*.h
+	$(CC) $(CFLAGS) -Wno-unused-parameter -o $@ tools/difftest.c $(GAME_SRCS) tools/z80ref/z80.c
+
+test: difftest
+	./tools/run_difftest.sh
+
+clean:
+	rm -f manicminer difftest
+
+.PHONY: test clean

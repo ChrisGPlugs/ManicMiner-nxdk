@@ -1,0 +1,23 @@
+# Game data: copyrighted, never commit
+ManicMiner.bin
+*.rom
+*.z80
+*.sna
+*.tap
+*.tzx
+
+# Build output
+bin/
+*.iso
+*.obj
+*.d
+*.c.d
+*.exe
+*.lib
+*.pdb
+*.manifest
+main.exe*
+manicminer
+difftest
+shot_*.bmp
+*.pcm
