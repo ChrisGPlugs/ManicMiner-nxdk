@@ -40,6 +40,10 @@ void (*zx_frame_hook)(void);
 /* Test hooks used by mm_game.c (shared by both engines in the combined build). */
 void (*mm_mainloop_hook)(void);
 void (*mm_music_tick_hook)(void);
+int mm_in_title;
+/* Re-entrancy guard for zx_frame (file scope so zx_reset can clear it if
+ * the host leaves the game from inside a frame hook with longjmp). */
+static int in_frame;
 int  zx_iff, zx_im;
 void (*zx_int_hook)(void);
 zx_ay_t zx_ay_log[ZX_AY_MAX];
@@ -63,6 +67,8 @@ void zx_reset(void)
     zx_beep_level = 0;
     zx_iff = 0;
     zx_im = 1;
+    zx_int_hook = 0;
+    in_frame = 0;
     zx_ay_count = 0;
     memset(zx_ay_regs, 0, sizeof zx_ay_regs);
 }
@@ -88,7 +94,6 @@ void zx_key(int row, int bit, int down)
 
 void zx_frame(void)
 {
-    static int in_frame;
     if (in_frame) return;            /* the interrupt handler ticks the clock too */
     in_frame = 1;
     while (zx_t >= zx_next_frame) {

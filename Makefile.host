@@ -1,7 +1,7 @@
 # Desktop build (Linux/macOS/MSYS2) for development and testing.
 #
 #   make -f Makefile.host               # SDL2 desktop builds: ./manicminer, ./manicminer128,
-#                                       # ./manicminer_combined
+#                                       # ./manicminerx
 #   make -f Makefile.host difftest difftest128   # comparison tests vs the Z80 originals
 #   make -f Makefile.host test          # run them (needs ManicMiner.bin / ManicMiner128.tap)
 
@@ -16,7 +16,7 @@ COMMON128 = src/zx.c src/mm_font.c src/ay.c src/st_player.c src/mm128_load.c
 HDRS = src/*.h
 B = build/host
 
-all: manicminer manicminer128 manicminer_combined
+all: manicminer manicminer128 manicminerx
 
 manicminer: src/main.c $(GAME_SRCS) $(HDRS)
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ src/main.c $(GAME_SRCS) $(SDL_LIBS)
@@ -32,7 +32,7 @@ $(B)/mm_game128.o: src/mm_game.c $(HDRS)
 manicminer128: src/main.c $(B)/mm_game128.o $(COMMON128) $(HDRS)
 	$(CC) $(CFLAGS) -DMM_ONLY_128 $(SDL_CFLAGS) -o $@ src/main.c $(B)/mm_game128.o $(COMMON128) $(SDL_LIBS)
 
-manicminer_combined: src/main.c $(B)/mm_game48.o $(B)/mm_game128.o $(COMMON128) $(HDRS)
+manicminerx: src/main.c $(B)/mm_game48.o $(B)/mm_game128.o $(COMMON128) $(HDRS)
 	$(CC) $(CFLAGS) -DMM_COMBINED $(SDL_CFLAGS) -o $@ src/main.c $(B)/mm_game48.o $(B)/mm_game128.o $(COMMON128) $(SDL_LIBS)
 
 difftest: tools/difftest.c $(GAME_SRCS) tools/z80ref/z80.c src/*.h
@@ -45,6 +45,6 @@ test: difftest difftest128
 	./tools/run_difftest.sh
 
 clean:
-	rm -rf manicminer manicminer128 manicminer_combined difftest difftest128 build/host
+	rm -rf manicminer manicminer128 manicminerx difftest difftest128 build/host
 
 .PHONY: all test clean

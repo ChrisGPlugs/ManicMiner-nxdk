@@ -4,7 +4,7 @@ Native ports of **Manic Miner** to the original Xbox, built with [nxdk](https://
 
 * **Manic Miner** (Matthew Smith, Bug-Byte 1983), from the 48K ZX Spectrum: `bin/default.xbe`.
 * **Manic Miner 128** (Mihai Novitchi's 128K/AY version of the Software Projects release, as fixed and re-packaged by Bob Fossil): `mm128/bin/default.xbe`. See [Manic Miner 128](#manic-miner-128) below.
-* **Both in one XBE**: `combined/bin/default.xbe`. See [Combined build](#combined-build).
+* **Both in one XBE (ManicMinerX)**: `ManicMinerX/bin/default.xbe`. See [ManicMinerX](#manicminerx-both-games-in-one-xbe).
 
 This isn't an emulator. The game's Z80 code was translated routine by routine into C ([`src/mm_game.c`](src/mm_game.c)), working from the annotated disassembly by William Humphreys and Simon Brattel: [WHumphreys/Manic-Miner-Source-Code](https://github.com/WHumphreys/Manic-Miner-Source-Code). The original memory map is kept:
 
@@ -119,7 +119,7 @@ Debug environment variables (desktop only): `MM_FAST=1` (no frame pacing), `MM_E
 | `src/st_player.c` | Manic Miner 128: Sound Tracker AY player, translated |
 | `src/ay.c` | AY-3-8912 emulation |
 | `mm128/` | nxdk build for Manic Miner 128 |
-| `combined/` | nxdk build with both games and the start-up chooser |
+| `ManicMinerX/` | nxdk build with both games and the start-up chooser (ManicMinerX) |
 | `tools/difftest128.c` | Comparison test for Manic Miner 128 |
 | `tools/difftest.c` | Comparison test against the original Z80 code |
 | `tools/z80ref/` | Z80 emulator used only by the test ([superzazu/z80](https://github.com/superzazu/z80), MIT, patched for 16-bit port addresses) |
@@ -167,9 +167,9 @@ Verified the same way as the 48K game ([`tools/difftest128.c`](tools/difftest128
 | White | TYPEWRITER | Types the cheat code |
 | White / Black, with cheat on | 9 + 1–5 | Teleport to the previous / next cavern (any cavern; see below) |
 
-## Combined build
+## ManicMinerX: both games in one XBE
 
-`make -C combined` builds one XBE containing both games (both engines are linked in, as `mm_run48` and `mm_run128`). At start-up it looks next to `default.xbe`:
+`make -C ManicMinerX` builds ManicMinerX, one XBE containing both games (both engines are linked in, as `mm_run48` and `mm_run128`). At start-up it looks next to `default.xbe`:
 
 | Files present | What happens |
 |---|---|
@@ -187,7 +187,9 @@ The chooser is built from Manic Miner's own title screen, taken from `ManicMiner
 | D-pad / left stick up-down | choose |
 | A or Start | play |
 
-Once a game is chosen it runs exactly as in its own XBE, with the same controls, in-game reset and diagnostics. Returning to the chooser means restarting the XBE (IGR).
+Once a game is chosen it runs exactly as in its own XBE, with the same controls, in-game reset and diagnostics. One addition: press **Back twice within 1.5 seconds on the game's intro** (its title screen or attract-mode demo) to go back to the chooser. The game restarts from scratch the next time it's picked. During play Back still just quits to the title, as before. If only one data file is present, there is no chooser and Back twice does nothing extra.
+
+The desktop test build is `make -f Makefile.host manicminerx`; there, Backspace acts as the pad's Back button.
 
 ## Credits and licence
 

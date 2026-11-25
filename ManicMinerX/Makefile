@@ -1,7 +1,7 @@
-# Manic Miner + Manic Miner 128 in one XBE (nxdk + SDL2).
+# ManicMinerX: Manic Miner + Manic Miner 128 in one XBE (nxdk + SDL2).
 #
 #   export NXDK_DIR=/path/to/nxdk
-#   make -C combined         # -> combined/bin/default.xbe and combined/ManicMinerCombined.iso
+#   make -C ManicMinerX      # -> ManicMinerX/bin/default.xbe and ManicMinerX/ManicMinerX.iso
 #
 # At start-up it looks next to default.xbe for ManicMiner.bin and
 # ManicMiner128.tap: one present -> that game starts; both -> a chooser
@@ -9,12 +9,12 @@
 # 48.rom) in the repository's top folder before running make and they are
 # copied next to default.xbe.
 
-XBE_TITLE = Manic\ Miner
-GEN_XISO  = ManicMinerCombined.iso
+XBE_TITLE = ManicMinerX
+GEN_XISO  = ManicMinerX.iso
 NXDK_SDL  = y
 TOP       = $(abspath $(CURDIR)/..)
 
-SRCS = $(CURDIR)/main_combined.c \
+SRCS = $(CURDIR)/main_x.c \
        $(CURDIR)/mm_game48.c \
        $(CURDIR)/mm_game128.c \
        $(TOP)/src/zx.c \

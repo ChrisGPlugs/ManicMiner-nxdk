@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <setjmp.h>
 #include <SDL.h>
 
 #ifdef NXDK
@@ -38,7 +39,7 @@
 #if defined(MM_COMBINED)
 #define HAVE_48  1
 #define HAVE_128 1
-#define GAME_TITLE "Manic Miner"
+#define GAME_TITLE "ManicMinerX"
 #elif defined(MM_ONLY_128)
 #define HAVE_128 1
 #define GAME_TITLE "Manic Miner 128"
@@ -102,6 +103,13 @@ static unsigned diag_draw_us;
 /* Chooser input, latched by poll_input so a quick tap is never missed. */
 static int ui_up, ui_down, ui_select;
 static int ui_stick_y;
+
+/* Back pressed twice on a game's intro (title screen or demo) returns to
+ * the chooser: the frame hook longjmps out of the running engine. */
+static int      chooser_available, game_running, back_to_chooser;
+static uint64_t last_back_frame;
+static jmp_buf  chooser_jmp;
+#define BACK_DOUBLE_FRAMES 75                /* 1.5 s */
 #endif
 
 /* ------------------------------------------------------------------------ */
@@ -433,6 +441,14 @@ static void pad_button(int button, int down)
     case SDL_CONTROLLER_BUTTON_BACK:
         set_bit(pad_keys, ZX_ROW_SHIFT_V, 0, down);        /* SHIFT+SPACE: quit */
         set_bit(pad_keys, ZX_ROW_SPACE_B, 0, down);
+#if defined(HAVE_48) && defined(HAVE_128)
+        if (down && chooser_available && game_running &&
+            (mm_in_title || mem[GameModeIndicator] != 0)) {      /* intro / demo */
+            if (last_back_frame && frame_count - last_back_frame <= BACK_DOUBLE_FRAMES)
+                back_to_chooser = 1;
+            last_back_frame = frame_count;
+        }
+#endif
         break;
     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:               /* White on the Xbox pad */
     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:              /* Black on the Xbox pad */
@@ -556,6 +572,7 @@ static void poll_input(void)
 #if defined(HAVE_48) && defined(HAVE_128)
                 if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_DOWN) ui_down = 1;
                 if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_UP) ui_up = 1;
+                if (e.key.keysym.sym == SDLK_BACKSPACE) pad_button(SDL_CONTROLLER_BUTTON_BACK, e.type == SDL_KEYDOWN);
 #endif
                 keyboard_key(e.key.keysym.sym, e.type == SDL_KEYDOWN);
             }
@@ -700,7 +717,7 @@ static void pace(void)
  *   MM_EXIT_AFTER=<n>      quit after n frames
  *   MM_SHOTS=<f1,f2,...>   save shot_<frame>.bmp at those frames
  *   MM_ENTER_AT=<f>        hold ENTER for a few frames from frame f
- *   MM_KEYS=<f>:<c>,...    hold key c ('1'-'9', '0', a-z, or '#' for ENTER)
+ *   MM_KEYS=<f>:<c>,...    hold key c ('1'-'9', '0', a-z, '#' for ENTER, '!' for pad Back)
  *                          for 10 frames starting at frame f
  *   MM_TELEPORT_AT=<f>,... press Black (teleport forward) at frame f
  *   MM_REPORT=1            print cavern / cheat / menu-patch state on exit
@@ -725,6 +742,7 @@ static void dbg_key_char(char c, int down)
 {
     static const char *rows[8] = { "#zxcv", "asdfg", "qwert", "12345", "09876", "poiuy", "\nlkjh", " #mnb" };
     if (c == '#') { set_bit(kb_keys, ZX_ROW_ENTER_H, 0, down); return; }
+    if (c == '!') { pad_button(SDL_CONTROLLER_BUTTON_BACK, down); return; }   /* pad Back */
     for (int r = 0; r < 8; r++)
         for (int b = 0; b < 5; b++)
             if (rows[r][b] == c) set_bit(kb_keys, r, b, down);
@@ -774,6 +792,12 @@ static void frame_hook(void)
 {
     render_audio();
     poll_input();
+#if defined(HAVE_48) && defined(HAVE_128)
+    if (back_to_chooser) {
+        back_to_chooser = 0;
+        longjmp(chooser_jmp, 1);             /* leave the engine for the chooser */
+    }
+#endif
 #ifndef NXDK
     debug_frame();
 #endif
@@ -949,7 +973,8 @@ static int launcher(void)
         ".  .  .  .  .  .  .  CHOOSE YOUR MINE  .  .  .  "
         "MANIC MINER . . BUG-BYTE ltd. 1983 . . By Matthew Smith  .  .  .  "
         "MANIC MINER 128 . . AY music by Mihai Novitchi . . fixes by Bob Fossil  .  .  .  "
-        "D-pad to choose . . A or START to play . . "
+        "MANICMINERX for the original Xbox  .  .  .  "
+        "D-pad to choose . . A or START to play . . BACK twice on a title screen returns here . . "
         "LT+RT+BACK+START to reset  .  .  .  .  .  .  .  "
         "                                ";
     int banner_len = (int)sizeof banner - 1;
@@ -1093,16 +1118,30 @@ int main(int argc, char **argv)
         fatal_screen(err1, err2);
     }
 
-    int choose128 = ok128 && !ok48;
+    volatile int choose128 = ok128 && !ok48;
 #if defined(HAVE_48) && defined(HAVE_128)
-    if (ok48 && ok128) {
-        /* Both present: the chooser, built from Manic Miner's own title
-         * screen (so it needs the 48K image in memory). */
+    chooser_available = ok48 && ok128;
+    if (chooser_available) {
+        /* Back twice on a game's intro lands here again. */
+        if (setjmp(chooser_jmp)) {
+            game_running = 0;
+            last_back_frame = 0;
+            macro_step = -1;
+            teleport_pending = 0;
+            v128 = 0;
+            frame_start_level = 0;
+        }
+        /* The chooser, built from Manic Miner's own title screen (so it
+         * needs the 48K image in memory). */
+        zx_reset();
+        memset(mem, 0, sizeof mem);
+        mm_install_font(have_rom ? rom : NULL);
         memcpy(mem + 0x4000, image48 + 0x4000, 0xC000);
         zx_set_model(ZX_MODEL_48K);
         choose128 = launcher();
     }
     v128 = choose128;
+    game_running = 1;
 #endif
     (void)choose128;
 

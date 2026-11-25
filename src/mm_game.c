@@ -1511,6 +1511,7 @@ void mm_run(void)
     T(4 + 10 + 10);
 
 Start:
+    mm_in_title = 1;
     M(CurrentCavernNumber) = 0;
     M(KempJoystickIndicator) = 0;
     M(GameModeIndicator) = 0;
@@ -1602,6 +1603,7 @@ Start:
     T(7 + 13);
 
 Start6:
+    mm_in_title = 0;
     /* Initialise the score. */
     T(10 + 10 + 10);
     fill(Score1, 0x30, 9);
