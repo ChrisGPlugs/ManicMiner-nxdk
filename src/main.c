@@ -400,12 +400,14 @@ static void read_pad_axes(void)
     uint8_t joy = 0;
     int left = 0, right = 0, fire = 0;
 #ifdef NXDK
-    /* In-game reset: LT + RT + Back + Start returns to the dashboard. */
+    /* In-game reset: LT + RT + Back + (Start or Black) returns to the
+     * dashboard. Both forms, to suit both types of Xbox controller. */
     if (pad &&
         SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000 &&
         SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000 &&
         SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_BACK) &&
-        SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) {
+        (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START) ||
+         SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER))) {
         XAudioPause();
         HalReturnToFirmware(HalRebootRoutine);   /* 1; not the quick reboot (2) */
     }

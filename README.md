@@ -66,7 +66,7 @@ Tested to build with clang 18 against nxdk master (November 2026).
 | White | 6031769 | Types the original cheat code (a boot appears next to the lives) |
 | White / Black, with cheat on | 6 + 1–5 | Teleport to the previous / next cavern |
 | Left stick click | | Diagnostics overlay (both versions) |
-| LT + RT + Back + Start | | In-game reset: back to the dashboard (`HalReturnToFirmware(1)`) |
+| LT + RT + Back + Start, or LT + RT + Back + Black | | In-game reset: back to the dashboard (`HalReturnToFirmware(1)`) |
 
 The desktop build maps the PC keyboard onto the Spectrum keyboard (arrow keys also work; Esc quits). The Xbox build uses the controller only.
 
@@ -152,7 +152,7 @@ Verified the same way as the 48K game ([`tools/difftest128.c`](tools/difftest128
 | Left trigger / Right trigger | 2 / 3 | In the menu: infinite air / music on-off |
 | X | A | Pause |
 | Back | SHIFT + SPACE | Quit to title |
-| LT + RT + Back + Start | | In-game reset (back to the dashboard) |
+| LT + RT + Back + Start, or LT + RT + Back + Black | | In-game reset (back to the dashboard) |
 | White | TYPEWRITER | Types the cheat code |
 | White / Black, with cheat on | 9 + 1–5 | Teleport to the previous / next cavern (any cavern; see below) |
 
