@@ -19,7 +19,9 @@
 
 #ifdef NXDK
 #include <hal/video.h>
+#include <hal/audio.h>
 #include <hal/xbox.h>
+#include <xboxkrnl/xboxkrnl.h>
 #include <windows.h>
 #define DATA_DIR "D:\\"
 #else
@@ -45,7 +47,9 @@
 static SDL_Window   *window;
 static SDL_Renderer *renderer;
 static SDL_Texture  *texture;
+#ifndef NXDK
 static SDL_AudioDeviceID audio_dev;
+#endif
 static SDL_GameController *pad;
 #ifndef NXDK
 static uint32_t frame_pixels[ZX_SCREEN_W * ZX_SCREEN_H];
@@ -53,18 +57,129 @@ static uint32_t frame_pixels[ZX_SCREEN_W * ZX_SCREEN_H];
 static uint64_t frame_count;
 static uint64_t perf_next;          /* wall-clock pacing when there is no audio */
 
-/* Audio queue targets, in Spectrum frames (20 ms). The Xbox audio driver
- * pulls 1024-sample (~21 ms) blocks; if the queue can't supply a whole
- * block SDL pads it with silence, which is heard as a gap. */
-#define AUDIO_QUEUE_TARGET  4       /* pace the game to keep ~80 ms queued */
-#define AUDIO_QUEUE_LOW     2       /* below ~40 ms: skip drawing to catch up */
-#define FRAME_BYTES         ((Uint32)(AUDIO_RATE / 50) * 4)
+/* Audio queue targets. The amount of audio queued and not yet played is
+ * the game's clock: the Spectrum is emulated only as fast as its sound is
+ * played. */
+#define AUDIO_QUEUE_TARGET_MS  80   /* pace the game to keep ~80 ms queued */
+#define AUDIO_QUEUE_LOW_MS     40   /* below this, skip drawing to catch up */
 
 /* Diagnostics overlay (left-stick click / F1): queued audio, underruns,
  * draw time, frames drawn and skipped. */
 static int      diag_on;
 static unsigned diag_underruns, diag_skipped, diag_drawn;
 static double   diag_draw_ms;
+
+/* ------------------------------------------------------------------------ */
+/* Audio output                                                             */
+/* ------------------------------------------------------------------------ */
+static int audio_ok;
+static uint64_t audio_rate_t0, audio_rate_samples;
+static double   audio_rate_measured;
+
+#ifdef NXDK
+/* The Xbox's AC97 controller fed directly, one buffer per Spectrum frame,
+ * in a ring of 32 DMA descriptors. How much is still queued comes from the
+ * controller's own Current Index Value register, so pacing follows the
+ * 48 kHz hardware exactly, without SDL's audio thread or driver callbacks. */
+#define XA_RING      32
+#define XA_BUF_BYTES (2048 * 4)
+static uint8_t *xa_buf[XA_RING];
+static uint16_t xa_samples[XA_RING];
+static unsigned xa_next;                     /* descriptors submitted, total */
+static volatile uint8_t *const xa_regs = (volatile uint8_t *)0xFEC00000;
+
+static void audio_open(void)
+{
+    XAudioInit(16, 2, NULL, NULL);           /* we feed it ourselves */
+    for (int i = 0; i < XA_RING; i++) {
+        xa_buf[i] = MmAllocateContiguousMemoryEx(XA_BUF_BYTES, 0, 0xFFFFFFFF, 0, PAGE_READWRITE | PAGE_WRITECOMBINE);
+        if (!xa_buf[i]) return;
+    }
+    audio_ok = 1;
+    /* Start with three frames of silence queued, then run. */
+    static int16_t silence[960 * 2];
+    for (int i = 0; i < 3; i++) {
+        unsigned slot = xa_next & 31;
+        memcpy(xa_buf[slot], silence, sizeof silence);
+        xa_samples[slot] = 960;
+        XAudioProvideSamples(xa_buf[slot], (unsigned short)sizeof silence, 0);
+        xa_next++;
+    }
+    XAudioPlay();
+}
+
+/* Buffers handed to the controller and not yet finished. */
+static int xa_in_flight(void)
+{
+    uint8_t civ = xa_regs[0x114] & 31;       /* PCM out: current index */
+    uint8_t sr  = xa_regs[0x116];            /* PCM out: status */
+    if (sr & 1) return 0;                    /* DMA halted: ran dry */
+    return (int)((xa_next - civ) & 31);
+}
+
+static unsigned audio_queued_ms(void)
+{
+    if (!audio_ok) return 0;
+    int n = xa_in_flight();
+    unsigned samples = 0;
+    for (int i = 0; i < n; i++) samples += xa_samples[(xa_next - 1 - i) & 31];
+    return samples * 1000u / AUDIO_RATE;
+}
+
+static void audio_submit(const int16_t *buf, int frames)
+{
+    if (!audio_ok) return;
+    int halted = (xa_regs[0x116] & 1) != 0;
+    if (frame_count > 50 && (halted || xa_in_flight() == 0)) diag_underruns++;
+    if (!halted && xa_in_flight() >= XA_RING - 2) return; /* never overrun the ring */
+    unsigned slot = xa_next & 31;
+    memcpy(xa_buf[slot], buf, (size_t)frames * 4);
+    xa_samples[slot] = (uint16_t)frames;
+    XAudioProvideSamples(xa_buf[slot], (unsigned short)(frames * 4), 0);
+    xa_next++;
+    if (halted) XAudioPlay();                /* ran dry: restart the DMA */
+}
+#else
+static void audio_open(void)
+{
+    SDL_AudioSpec want, have;
+    SDL_zero(want);
+    want.freq = AUDIO_RATE;
+    want.format = AUDIO_S16SYS;
+    want.channels = 2;
+    want.samples = 1024;
+    want.callback = NULL;
+    audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (audio_dev) { SDL_PauseAudioDevice(audio_dev, 0); audio_ok = 1; }
+}
+
+static unsigned audio_queued_ms(void)
+{
+    return audio_ok ? SDL_GetQueuedAudioSize(audio_dev) / (AUDIO_RATE / 1000 * 4) : 0;
+}
+
+static void audio_submit(const int16_t *buf, int frames)
+{
+    if (!audio_ok) return;
+    if (frame_count > 50 && SDL_GetQueuedAudioSize(audio_dev) == 0) diag_underruns++;
+    SDL_QueueAudio(audio_dev, buf, (Uint32)(frames * 2 * sizeof(int16_t)));
+}
+#endif
+
+/* Measured playback rate: samples consumed per wall-clock second (while
+ * the queue level is steady, submitted == consumed). Should read 48000. */
+static void audio_measure(int frames)
+{
+    uint64_t now = SDL_GetPerformanceCounter();
+    if (!audio_rate_t0) { audio_rate_t0 = now; audio_rate_samples = 0; return; }
+    audio_rate_samples += (uint64_t)frames;
+    double secs = (double)(now - audio_rate_t0) / (double)SDL_GetPerformanceFrequency();
+    if (secs >= 2.0) {
+        audio_rate_measured = (double)audio_rate_samples / secs;
+        audio_rate_t0 = now;
+        audio_rate_samples = 0;
+    }
+}
 
 /* ------------------------------------------------------------------------ */
 /* Beeper -> PCM                                                            */
@@ -131,11 +246,8 @@ static void render_audio(void)
     while (ay_ev < zx_ay_count) { ay_write(&ay, zx_ay_log[ay_ev].reg, zx_ay_log[ay_ev].val); ay_ev++; }
 #endif
 
-    if (audio_dev) {
-        if (frame_count > 50 && SDL_GetQueuedAudioSize(audio_dev) == 0)
-            diag_underruns++;
-        SDL_QueueAudio(audio_dev, audio_buf, (Uint32)(n * 2 * sizeof(int16_t)));
-    }
+    audio_submit(audio_buf, n);
+    audio_measure(n);
 #ifndef NXDK
     {
         /* MM_PCM=<file>: also append raw 48 kHz s16 stereo to a file. */
@@ -287,6 +399,17 @@ static void read_pad_axes(void)
 {
     uint8_t joy = 0;
     int left = 0, right = 0, fire = 0;
+#ifdef NXDK
+    /* In-game reset: LT + RT + Back + Start returns to the dashboard. */
+    if (pad &&
+        SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000 &&
+        SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000 &&
+        SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_BACK) &&
+        SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) {
+        XAudioPause();
+        HalReturnToFirmware(HalRebootRoutine);   /* 1; not the quick reboot (2) */
+    }
+#endif
 #ifdef MM128
     if (pad) {
         /* Menu options 2 (air) and 3 (music) on the triggers. */
@@ -413,8 +536,8 @@ static void draw_text(uint32_t *dst, int pitch, int scale, int x, int y, const c
 
 static void diag_line(char *buf, size_t len)
 {
-    unsigned q = audio_dev ? SDL_GetQueuedAudioSize(audio_dev) / (AUDIO_RATE / 1000 * 4) : 0;
-    snprintf(buf, len, "Q%3ums U%-4u D%4.1fms S%-5u", q, diag_underruns, diag_draw_ms, diag_skipped);
+    snprintf(buf, len, "Q%3ums U%-4u D%4.1fms S%-5u R%5.0fHz", audio_queued_ms(), diag_underruns,
+             diag_draw_ms, diag_skipped, audio_rate_measured);
 }
 
 #ifdef NXDK
@@ -474,9 +597,9 @@ static void present(void)
 
 static void pace(void)
 {
-    if (audio_dev) {
+    if (audio_ok) {
         /* The audio queue is the clock: keep ~80 ms queued. */
-        while (SDL_GetQueuedAudioSize(audio_dev) > AUDIO_QUEUE_TARGET * FRAME_BYTES)
+        while (audio_queued_ms() > AUDIO_QUEUE_TARGET_MS)
             SDL_Delay(1);
         return;
     }
@@ -576,7 +699,7 @@ static void frame_hook(void)
 #endif
     /* If the audio queue is running low, the game must catch up: emulate
      * this frame without drawing it. Sound must never wait for pictures. */
-    if (audio_dev && frame_count > 50 && SDL_GetQueuedAudioSize(audio_dev) < AUDIO_QUEUE_LOW * FRAME_BYTES)
+    if (audio_ok && frame_count > 50 && audio_queued_ms() < AUDIO_QUEUE_LOW_MS)
         diag_skipped++;
     else
         present();
@@ -629,12 +752,11 @@ int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
 #ifdef NXDK
-    /* Video goes straight to the framebuffer; SDL handles audio and pads. */
+    /* Video goes straight to the framebuffer and audio straight to the AC97
+     * controller; SDL handles the controllers. */
     XVideoSetMode(WINDOW_W, WINDOW_H, 32, REFRESH_DEFAULT);
-    if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
-        if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0)
-            return 1;
-    }
+    if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0)
+        return 1;
     memset(XVideoGetFB(), 0, (size_t)WINDOW_W * WINDOW_H * 4);
     XVideoFlushFB();
     (void)window; (void)renderer; (void)texture;
@@ -653,15 +775,7 @@ int main(int argc, char **argv)
     if (!texture) return 1;
 #endif
 
-    SDL_AudioSpec want, have;
-    SDL_zero(want);
-    want.freq = AUDIO_RATE;
-    want.format = AUDIO_S16SYS;
-    want.channels = 2;
-    want.samples = 1024;
-    want.callback = NULL;
-    audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (audio_dev) SDL_PauseAudioDevice(audio_dev, 0);
+    audio_open();
 
     for (int i = 0; i < SDL_NumJoysticks(); i++)
         if (SDL_IsGameController(i) && !pad) pad = SDL_GameControllerOpen(i);

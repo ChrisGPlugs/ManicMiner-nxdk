@@ -66,6 +66,7 @@ Tested to build with clang 18 against nxdk master (November 2026).
 | White | 6031769 | Types the original cheat code (a boot appears next to the lives) |
 | White / Black, with cheat on | 6 + 1–5 | Teleport to the previous / next cavern |
 | Left stick click | | Diagnostics overlay (both versions) |
+| LT + RT + Back + Start | | In-game reset: back to the dashboard (`HalReturnToFirmware(1)`) |
 
 The desktop build maps the PC keyboard onto the Spectrum keyboard (arrow keys also work; Esc quits). The Xbox build uses the controller only.
 
@@ -73,7 +74,7 @@ The desktop build maps the PC keyboard onto the Spectrum keyboard (arrow keys al
 
 ## Sound and timing on the Xbox
 
-The game is paced by the audio queue: the emulated Spectrum runs only as fast as its sound is played, and about 80 ms of audio is kept queued. The picture is drawn straight into the Xbox framebuffer at 2×, and only when the Spectrum screen has changed. If the audio queue drops below ~40 ms, frames are emulated without being drawn until it recovers, so the sound never waits for the picture.
+The game is paced by its sound: the emulated Spectrum runs only as fast as its audio is played, with about 80 ms queued. On the Xbox the AC97 controller is fed directly (not through SDL's audio thread): one DMA buffer per Spectrum frame in a ring of 32, with the queue level read from the controller's Current Index register. Speed and pitch therefore follow the 48 kHz hardware clock exactly. The picture is drawn straight into the framebuffer at 2×, and only when the Spectrum screen has changed. If the queue drops below ~40 ms, frames are emulated without being drawn until it recovers, so the sound never waits for the picture.
 
 Clicking the left stick shows a diagnostics line at the top of the screen:
 
@@ -83,6 +84,7 @@ Clicking the left stick shows a diagnostics line at the top of the screen:
 | `U` | underruns: times the queue ran dry. Each is an audible gap; should stay at 0 |
 | `D` | average time to draw a frame (ms) |
 | `S` | frames emulated without drawing, to catch up |
+| `R` | measured playback rate (samples per second); should read about 48000. Anything else means the game runs fast or slow by that ratio |
 
 ## Desktop build (for development)
 
@@ -150,6 +152,7 @@ Verified the same way as the 48K game ([`tools/difftest128.c`](tools/difftest128
 | Left trigger / Right trigger | 2 / 3 | In the menu: infinite air / music on-off |
 | X | A | Pause |
 | Back | SHIFT + SPACE | Quit to title |
+| LT + RT + Back + Start | | In-game reset (back to the dashboard) |
 | White | TYPEWRITER | Types the cheat code |
 | White / Black, with cheat on | 9 + 1–5 | Teleport to the previous / next cavern (any cavern; see below) |
 
