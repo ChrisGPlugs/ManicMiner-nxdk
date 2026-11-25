@@ -47,9 +47,24 @@ static SDL_Renderer *renderer;
 static SDL_Texture  *texture;
 static SDL_AudioDeviceID audio_dev;
 static SDL_GameController *pad;
+#ifndef NXDK
 static uint32_t frame_pixels[ZX_SCREEN_W * ZX_SCREEN_H];
+#endif
 static uint64_t frame_count;
 static uint64_t perf_next;          /* wall-clock pacing when there is no audio */
+
+/* Audio queue targets, in Spectrum frames (20 ms). The Xbox audio driver
+ * pulls 1024-sample (~21 ms) blocks; if the queue can't supply a whole
+ * block SDL pads it with silence, which is heard as a gap. */
+#define AUDIO_QUEUE_TARGET  4       /* pace the game to keep ~80 ms queued */
+#define AUDIO_QUEUE_LOW     2       /* below ~40 ms: skip drawing to catch up */
+#define FRAME_BYTES         ((Uint32)(AUDIO_RATE / 50) * 4)
+
+/* Diagnostics overlay (left-stick click / F1): queued audio, underruns,
+ * draw time, frames drawn and skipped. */
+static int      diag_on;
+static unsigned diag_underruns, diag_skipped, diag_drawn;
+static double   diag_draw_ms;
 
 /* ------------------------------------------------------------------------ */
 /* Beeper -> PCM                                                            */
@@ -116,8 +131,11 @@ static void render_audio(void)
     while (ay_ev < zx_ay_count) { ay_write(&ay, zx_ay_log[ay_ev].reg, zx_ay_log[ay_ev].val); ay_ev++; }
 #endif
 
-    if (audio_dev)
+    if (audio_dev) {
+        if (frame_count > 50 && SDL_GetQueuedAudioSize(audio_dev) == 0)
+            diag_underruns++;
         SDL_QueueAudio(audio_dev, audio_buf, (Uint32)(n * 2 * sizeof(int16_t)));
+    }
 #ifndef NXDK
     {
         /* MM_PCM=<file>: also append raw 48 kHz s16 stereo to a file. */
@@ -243,6 +261,9 @@ static void pad_button(int button, int down)
     case SDL_CONTROLLER_BUTTON_X:
         set_bit(pad_keys, ZX_ROW_A_G, 0, down);            /* A: pause */
         break;
+    case SDL_CONTROLLER_BUTTON_LEFTSTICK:
+        if (down) diag_on = !diag_on;                      /* diagnostics */
+        break;
     case SDL_CONTROLLER_BUTTON_BACK:
         set_bit(pad_keys, ZX_ROW_SHIFT_V, 0, down);        /* SHIFT+SPACE: quit */
         set_bit(pad_keys, ZX_ROW_SPACE_B, 0, down);
@@ -338,6 +359,7 @@ static void poll_input(void)
         case SDL_KEYUP:
             if (!e.key.repeat) {
                 if (e.key.keysym.sym == SDLK_ESCAPE) exit(0);
+                if (e.key.keysym.sym == SDLK_F1 && e.type == SDL_KEYDOWN) diag_on = !diag_on;
                 keyboard_key(e.key.keysym.sym, e.type == SDL_KEYDOWN);
             }
             break;
@@ -355,21 +377,106 @@ static void poll_input(void)
 /* ------------------------------------------------------------------------ */
 /* Video and pacing                                                         */
 /* ------------------------------------------------------------------------ */
+/* Has the picture changed since it was last drawn? Manic Miner redraws
+ * the screen once per main-loop pass (~3.5 frames), so most frames are
+ * identical and needn't be drawn again. */
+static int screen_changed(int flash_phase)
+{
+    static uint8_t last[6912];
+    static int last_border = -1, last_flash = -1;
+    int has_flash = 0;
+    for (int i = 0; i < 768; i++)
+        if (mem[0x5800 + i] & 0x80) { has_flash = 1; break; }
+    int flash_key = has_flash ? flash_phase : -1;
+    if (last_border == zx_border && last_flash == flash_key && !memcmp(last, mem + 0x4000, sizeof last))
+        return 0;
+    memcpy(last, mem + 0x4000, sizeof last);
+    last_border = zx_border;
+    last_flash = flash_key;
+    return 1;
+}
+
+/* Text for the diagnostics overlay, drawn with the game's own font. */
+static void draw_text(uint32_t *dst, int pitch, int scale, int x, int y, const char *s, uint32_t fg, uint32_t bg)
+{
+    for (; *s; s++, x += 8 * scale) {
+        uint8_t ch = (uint8_t)*s;
+        if (ch < 32 || ch > 127) ch = '?';
+        for (int py = 0; py < 8 * scale; py++) {
+            uint8_t bits = mem[ROM_FONT + (ch - 32) * 8 + py / scale];
+            uint32_t *row = dst + (y + py) * pitch + x;
+            for (int px = 0; px < 8 * scale; px++)
+                row[px] = (bits & (0x80 >> (px / scale))) ? fg : bg;
+        }
+    }
+}
+
+static void diag_line(char *buf, size_t len)
+{
+    unsigned q = audio_dev ? SDL_GetQueuedAudioSize(audio_dev) / (AUDIO_RATE / 1000 * 4) : 0;
+    snprintf(buf, len, "Q%3ums U%-4u D%4.1fms S%-5u", q, diag_underruns, diag_draw_ms, diag_skipped);
+}
+
+#ifdef NXDK
+/* Draw straight into the Xbox framebuffer at 2x: one pass, sequential
+ * writes, no SDL surface conversion or scaling. */
 static void present(void)
 {
-    zx_render(frame_pixels, ZX_SCREEN_W, (int)((frame_count >> 4) & 1));
+    int flash = (int)((frame_count >> 4) & 1);
+    int changed = screen_changed(flash);
+    if (changed || diag_on) {
+        uint64_t t0 = SDL_GetPerformanceCounter();
+        VIDEO_MODE vm = XVideoGetMode();
+        uint32_t *fb = (uint32_t *)XVideoGetFB();
+        if (changed) {
+            static uint32_t line[ZX_SCREEN_W * ZX_SCREEN_H];
+            zx_render(line, ZX_SCREEN_W, flash);
+            static uint32_t row2x[WINDOW_W];
+            for (int y = 0; y < ZX_SCREEN_H; y++) {
+                const uint32_t *src = line + y * ZX_SCREEN_W;
+                for (int x = 0; x < ZX_SCREEN_W; x++) row2x[2 * x] = row2x[2 * x + 1] = src[x];
+                memcpy(fb + (2 * y) * vm.width, row2x, sizeof row2x);
+                memcpy(fb + (2 * y + 1) * vm.width, row2x, sizeof row2x);
+            }
+            diag_drawn++;
+        }
+        if (diag_on) {
+            char buf[64];
+            diag_line(buf, sizeof buf);
+            draw_text(fb, vm.width, 2, 16, 8, buf, 0xFFFFFFFF, 0xFF000000);
+        }
+        XVideoFlushFB();
+        double ms = (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+        diag_draw_ms = diag_draw_ms * 0.9 + ms * 0.1;
+    }
+}
+#else
+static void present(void)
+{
+    int flash = (int)((frame_count >> 4) & 1);
+    if (!screen_changed(flash) && !diag_on) return;
+    uint64_t t0 = SDL_GetPerformanceCounter();
+    zx_render(frame_pixels, ZX_SCREEN_W, flash);
+    if (diag_on) {
+        char buf[64];
+        diag_line(buf, sizeof buf);
+        draw_text(frame_pixels, ZX_SCREEN_W, 1, 8, 4, buf, 0xFFFFFFFF, 0xFF000000);
+    }
     SDL_UpdateTexture(texture, NULL, frame_pixels, ZX_SCREEN_W * 4);
     SDL_RenderClear(renderer);
     SDL_RenderCopy(renderer, texture, NULL, NULL);
     SDL_RenderPresent(renderer);
+    diag_drawn++;
+    double ms = (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+    diag_draw_ms = diag_draw_ms * 0.9 + ms * 0.1;
 }
+#endif
 
 static void pace(void)
 {
     if (audio_dev) {
-        /* Keep about three frames of audio queued: that's the clock. */
-        const Uint32 frame_bytes = (Uint32)(AUDIO_RATE / 50) * 4;
-        while (SDL_GetQueuedAudioSize(audio_dev) > 3 * frame_bytes)
+        /* The audio queue is the clock: keep ~80 ms queued. */
+        while (SDL_GetQueuedAudioSize(audio_dev) > AUDIO_QUEUE_TARGET * FRAME_BYTES)
             SDL_Delay(1);
         return;
     }
@@ -393,7 +500,8 @@ static void pace(void)
  *   MM_KEYS=<f>:<c>,...    hold key c ('1'-'9', '0', a-z, or '#' for ENTER)
  *                          for 10 frames starting at frame f
  *   MM_TELEPORT_AT=<f>,... press Black (teleport forward) at frame f
- *   MM_REPORT=1            print cavern / cheat / menu-patch state on exit */
+ *   MM_REPORT=1            print cavern / cheat / menu-patch state on exit
+ *   MM_DIAG=1              start with the diagnostics overlay on (F1) */
 static int  dbg_fast;
 static long dbg_exit_after = -1, dbg_enter_at = -1;
 static const char *dbg_shots;
@@ -466,7 +574,12 @@ static void frame_hook(void)
 #ifndef NXDK
     debug_frame();
 #endif
-    present();
+    /* If the audio queue is running low, the game must catch up: emulate
+     * this frame without drawing it. Sound must never wait for pictures. */
+    if (audio_dev && frame_count > 50 && SDL_GetQueuedAudioSize(audio_dev) < AUDIO_QUEUE_LOW * FRAME_BYTES)
+        diag_skipped++;
+    else
+        present();
 #ifndef NXDK
     if (!dbg_fast)
 #endif
@@ -516,8 +629,16 @@ int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
 #ifdef NXDK
+    /* Video goes straight to the framebuffer; SDL handles audio and pads. */
     XVideoSetMode(WINDOW_W, WINDOW_H, 32, REFRESH_DEFAULT);
-#endif
+    if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
+        if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0)
+            return 1;
+    }
+    memset(XVideoGetFB(), 0, (size_t)WINDOW_W * WINDOW_H * 4);
+    XVideoFlushFB();
+    (void)window; (void)renderer; (void)texture;
+#else
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0)
             return 1;
@@ -530,6 +651,7 @@ int main(int argc, char **argv)
     texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
                                 ZX_SCREEN_W, ZX_SCREEN_H);
     if (!texture) return 1;
+#endif
 
     SDL_AudioSpec want, have;
     SDL_zero(want);
@@ -585,6 +707,7 @@ int main(int argc, char **argv)
     dbg_shots = getenv("MM_SHOTS");
     dbg_keys = getenv("MM_KEYS");
     dbg_teleport = getenv("MM_TELEPORT_AT");
+    if (getenv("MM_DIAG")) diag_on = 1;
 #endif
 
     zx_in_filter = teleport_in_filter;

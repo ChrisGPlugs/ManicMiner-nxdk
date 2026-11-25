@@ -65,10 +65,24 @@ Tested to build with clang 18 against nxdk master (November 2026).
 | Back | SHIFT + SPACE | Quit to title screen |
 | White | 6031769 | Types the original cheat code (a boot appears next to the lives) |
 | White / Black, with cheat on | 6 + 1–5 | Teleport to the previous / next cavern |
+| Left stick click | | Diagnostics overlay (both versions) |
 
 The desktop build maps the PC keyboard onto the Spectrum keyboard (arrow keys also work; Esc quits). The Xbox build uses the controller only.
 
 **How the teleport button works.** The game teleports when its teleport check sees the activator key (`6`, or `9` on Manic Miner 128) together with the cavern number in binary on keys `1`–`5`. Holding those keys down has side effects. On Manic Miner 128, key `1` also opens Mihai's options menu, which would toggle infinite lives and block the teleport for odd-numbered caverns. On both versions, key `5` also means "left". So the button doesn't hold keys. It answers exactly the two port reads the teleport check makes: the `0`–`6` row shows the activator, and the `1`–`5` read that immediately follows it shows the cavern number. Every other read sees `1`–`5` released. The game code is unchanged; the result is the same as a human pressing the keys at exactly the right moment. It fires once per press and reaches every cavern.
+
+## Sound and timing on the Xbox
+
+The game is paced by the audio queue: the emulated Spectrum runs only as fast as its sound is played, and about 80 ms of audio is kept queued. The picture is drawn straight into the Xbox framebuffer at 2×, and only when the Spectrum screen has changed. If the audio queue drops below ~40 ms, frames are emulated without being drawn until it recovers, so the sound never waits for the picture.
+
+Clicking the left stick shows a diagnostics line at the top of the screen:
+
+| Field | Meaning |
+|---|---|
+| `Q` | audio currently queued (ms); should hover around 60–80 |
+| `U` | underruns: times the queue ran dry. Each is an audible gap; should stay at 0 |
+| `D` | average time to draw a frame (ms) |
+| `S` | frames emulated without drawing, to catch up |
 
 ## Desktop build (for development)
 
