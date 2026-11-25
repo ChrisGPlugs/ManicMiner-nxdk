@@ -6,12 +6,21 @@
 #ifndef MM_GAME_H
 #define MM_GAME_H
 
-/* Run Manic Miner from AppEntry (0x8400). Never returns; the host gets
- * control back every emulated frame through zx_frame_hook. */
-void mm_run(void);
+/* Run the game from AppEntry (33792). Never returns; the host gets control
+ * back every emulated frame through zx_frame_hook. mm_game.c builds as
+ * mm_run48 (Bug-Byte) or, with -DMM128, as mm_run128 (Manic Miner 128); the
+ * combined build links both. */
+void mm_run48(void);
+void mm_run128(void);
+#ifdef MM128
+#define mm_run mm_run128
+#else
+#define mm_run mm_run48
+#endif
 
 /* Optional hook called at the top of every pass through the main loop
- * (address 0x870E in the original). Used by the comparison test. */
+ * (address 0x870E in the original). Used by the comparison test. The hooks
+ * are defined in zx.c, so both engines can share them. */
 extern void (*mm_mainloop_hook)(void);
 
 /* Optional hook called after each AY music tick (MM128 only; test use). */

@@ -37,6 +37,9 @@ int       zx_beep_count;
 uint8_t   zx_beep_level;
 
 void (*zx_frame_hook)(void);
+/* Test hooks used by mm_game.c (shared by both engines in the combined build). */
+void (*mm_mainloop_hook)(void);
+void (*mm_music_tick_hook)(void);
 int  zx_iff, zx_im;
 void (*zx_int_hook)(void);
 zx_ay_t zx_ay_log[ZX_AY_MAX];

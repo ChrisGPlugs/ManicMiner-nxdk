@@ -20,7 +20,7 @@ SRCS = $(CURDIR)/main128.c \
        $(TOP)/src/st_player.c \
        $(TOP)/src/mm128_load.c
 
-CFLAGS += -O2 -Wall -DMM128 -I$(TOP)/src
+CFLAGS += -O2 -Wall -I$(TOP)/src
 
 NXDK_DIR ?= $(TOP)/../nxdk
 

@@ -4,6 +4,7 @@ Native ports of **Manic Miner** to the original Xbox, built with [nxdk](https://
 
 * **Manic Miner** (Matthew Smith, Bug-Byte 1983), from the 48K ZX Spectrum: `bin/default.xbe`.
 * **Manic Miner 128** (Mihai Novitchi's 128K/AY version of the Software Projects release, as fixed and re-packaged by Bob Fossil): `mm128/bin/default.xbe`. See [Manic Miner 128](#manic-miner-128) below.
+* **Both in one XBE**: `combined/bin/default.xbe`. See [Combined build](#combined-build).
 
 This isn't an emulator. The game's Z80 code was translated routine by routine into C ([`src/mm_game.c`](src/mm_game.c)), working from the annotated disassembly by William Humphreys and Simon Brattel: [WHumphreys/Manic-Miner-Source-Code](https://github.com/WHumphreys/Manic-Miner-Source-Code). The original memory map is kept:
 
@@ -118,6 +119,7 @@ Debug environment variables (desktop only): `MM_FAST=1` (no frame pacing), `MM_E
 | `src/st_player.c` | Manic Miner 128: Sound Tracker AY player, translated |
 | `src/ay.c` | AY-3-8912 emulation |
 | `mm128/` | nxdk build for Manic Miner 128 |
+| `combined/` | nxdk build with both games and the start-up chooser |
 | `tools/difftest128.c` | Comparison test for Manic Miner 128 |
 | `tools/difftest.c` | Comparison test against the original Z80 code |
 | `tools/z80ref/` | Z80 emulator used only by the test ([superzazu/z80](https://github.com/superzazu/z80), MIT, patched for 16-bit port addresses) |
@@ -164,6 +166,28 @@ Verified the same way as the 48K game ([`tools/difftest128.c`](tools/difftest128
 | LT + RT + Back + Start, or LT + RT + Back + Black | | In-game reset (back to the dashboard) |
 | White | TYPEWRITER | Types the cheat code |
 | White / Black, with cheat on | 9 + 1–5 | Teleport to the previous / next cavern (any cavern; see below) |
+
+## Combined build
+
+`make -C combined` builds one XBE containing both games (both engines are linked in, as `mm_run48` and `mm_run128`). At start-up it looks next to `default.xbe`:
+
+| Files present | What happens |
+|---|---|
+| `ManicMiner.bin` only | Manic Miner (Bug-Byte) starts |
+| `ManicMiner128.tap` only | Manic Miner 128 starts |
+| both | a chooser |
+| neither | a message saying which files to add |
+
+A file that is present but isn't the expected one (wrong size, unsupported tape) counts as missing, so the other game still starts.
+
+The chooser is built from Manic Miner's own title screen, taken from `ManicMiner.bin`: the house and sun, the MANIC MINER band and the piano keyboard. Willy walks at the top right, and the Blue Danube plays on the beeper with the piano keys lighting up. It uses the original's note loop and key mapping, so the border flickers in time just like the original. The bottom third lists the two games, with the selected one in the yellow cavern-name style, followed by a scrolling banner and a hint line.
+
+| Chooser control | |
+|---|---|
+| D-pad / left stick up-down | choose |
+| A or Start | play |
+
+Once a game is chosen it runs exactly as in its own XBE, with the same controls, in-game reset and diagnostics. Returning to the chooser means restarting the XBE (IGR).
 
 ## Credits and licence
 

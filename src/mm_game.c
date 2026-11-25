@@ -51,8 +51,6 @@
 #define ENTER_PORT    0xAFFE
 #endif
 
-void (*mm_mainloop_hook)(void);
-void (*mm_music_tick_hook)(void);
 
 #ifdef MM128
 static void UnpackData(uint16_t hl, uint16_t de, uint16_t bc, uint8_t a);

@@ -4,10 +4,17 @@
  * Builds for the original Xbox with nxdk (NXDK_SDL = y) and, for development,
  * for any desktop with SDL2 (see Makefile.host).
  *
- * The game (mm_game.c) runs as straight-line code; every 69888 emulated
- * T-states (one Spectrum frame, 50 Hz) zx.c calls frame_hook() below, which
- * turns that frame's beeper activity into PCM, reads the controller, draws the
- * Spectrum screen, and paces everything to real time.
+ * The game (mm_game.c) runs as straight-line code; every emulated Spectrum
+ * frame (50 Hz) zx.c calls frame_hook() below, which turns that frame's
+ * beeper/AY activity into PCM, reads the controller, draws the Spectrum
+ * screen, and paces everything to real time.
+ *
+ * Three builds share this file:
+ *   default          Manic Miner (Bug-Byte, 48K) only
+ *   MM_ONLY_128      Manic Miner 128 only
+ *   MM_COMBINED      both engines; picks one at start-up from the data files
+ *                    present, with a chooser styled on the game's title screen
+ *                    when both are there
  *
  * SPDX-License-Identifier: MIT
  */
@@ -28,17 +35,39 @@
 #define DATA_DIR ""
 #endif
 
-#include "zx.h"
-#include "mm_mem.h"
-#include "mm_game.h"
-#include "mm_font.h"
-#ifdef MM128
-#include "ay.h"
-#include "mm128_load.h"
+#if defined(MM_COMBINED)
+#define HAVE_48  1
+#define HAVE_128 1
+#define GAME_TITLE "Manic Miner"
+#elif defined(MM_ONLY_128)
+#define HAVE_128 1
 #define GAME_TITLE "Manic Miner 128"
 #else
+#define HAVE_48  1
 #define GAME_TITLE "Manic Miner"
 #endif
+
+#include "zx.h"
+#include "mm_mem.h"          /* Bug-Byte addresses (shared ones are identical) */
+#include "mm_game.h"
+#include "mm_font.h"
+#ifdef HAVE_128
+#include "ay.h"
+#include "mm128_load.h"
+#endif
+
+/* Which game is running (fixed in the single builds). */
+#if defined(HAVE_128) && !defined(HAVE_48)
+static const int v128 = 1;
+#elif defined(HAVE_128)
+static int v128;
+#else
+static const int v128 = 0;
+#endif
+
+/* Manic Miner 128 addresses the front end needs (see mm_mem.h, -DMM128). */
+#define MM128_PatchLivesDec   35147
+#define MM128_MenuLivesYesNo  38004
 
 #define AUDIO_RATE   48000
 #define WINDOW_W     640
@@ -68,6 +97,12 @@ static uint64_t perf_next;          /* wall-clock pacing when there is no audio 
 static int      diag_on;
 static unsigned diag_underruns, diag_skipped, diag_drawn;
 static unsigned diag_draw_us;
+
+#if defined(HAVE_48) && defined(HAVE_128)
+/* Chooser input, latched by poll_input so a quick tap is never missed. */
+static int ui_up, ui_down, ui_select;
+static int ui_stick_y;
+#endif
 
 /* ------------------------------------------------------------------------ */
 /* Audio output                                                             */
@@ -213,7 +248,7 @@ static int16_t audio_buf[2 * 2048];
 static double  samples_carry;
 static uint8_t frame_start_level;
 static float   hp_prev_in, hp_prev_out;
-#ifdef MM128
+#ifdef HAVE_128
 static ay_t    ay;
 #endif
 
@@ -233,7 +268,7 @@ static void render_audio(void)
     double t_per_sample = (double)ZX_T_PER_FRAME / n;
     int ev = 0;
     uint8_t level = frame_start_level;
-#ifdef MM128
+#ifdef HAVE_128
     int ay_ev = 0;
 #endif
     for (int i = 0; i < n; i++) {
@@ -249,13 +284,15 @@ static void render_audio(void)
         }
         acc += level_value(level) * (t1 - t);
         float x = (float)(acc / t_per_sample);
-#ifdef MM128
-        /* AY register writes take effect at the sample they fall in. */
-        while (ay_ev < zx_ay_count && zx_ay_log[ay_ev].t < t1) {
-            ay_write(&ay, zx_ay_log[ay_ev].reg, zx_ay_log[ay_ev].val);
-            ay_ev++;
+#ifdef HAVE_128
+        if (v128) {
+            /* AY register writes take effect at the sample they fall in. */
+            while (ay_ev < zx_ay_count && zx_ay_log[ay_ev].t < t1) {
+                ay_write(&ay, zx_ay_log[ay_ev].reg, zx_ay_log[ay_ev].val);
+                ay_ev++;
+            }
+            x = x * 0.6f + ay_sample(&ay) * 1.6f;
         }
-        x = x * 0.6f + ay_sample(&ay) * 1.6f;
 #endif
         /* DC-blocking high-pass so a speaker left "on" is silent. */
         float y = x - hp_prev_in + 0.995f * hp_prev_out;
@@ -267,8 +304,9 @@ static void render_audio(void)
         audio_buf[2 * i] = audio_buf[2 * i + 1] = (int16_t)s;
     }
     frame_start_level = zx_beep_level;
-#ifdef MM128
-    while (ay_ev < zx_ay_count) { ay_write(&ay, zx_ay_log[ay_ev].reg, zx_ay_log[ay_ev].val); ay_ev++; }
+#ifdef HAVE_128
+    if (v128)
+        while (ay_ev < zx_ay_count) { ay_write(&ay, zx_ay_log[ay_ev].reg, zx_ay_log[ay_ev].val); ay_ev++; }
 #endif
 
     audio_submit(audio_buf, n);
@@ -298,25 +336,21 @@ static void set_bit(uint8_t *rows, int row, int bit, int down)
 }
 
 /* Cheat-code macro: types the cheat one key at a time. */
-static const struct { uint8_t row, bit; } cheat_keys[] = {
-#ifndef MM128
+typedef struct { uint8_t row, bit; } zx_keypos_t;
+static const zx_keypos_t cheat_keys_48[] = {
     /* 6031769 */
     { ZX_ROW_0_6, 4 }, { ZX_ROW_0_6, 0 }, { ZX_ROW_1_5, 2 }, { ZX_ROW_1_5, 0 },
     { ZX_ROW_0_6, 3 }, { ZX_ROW_0_6, 4 }, { ZX_ROW_0_6, 1 },
-#else
-    /* TYPEWRITER */
+};
+static const zx_keypos_t cheat_keys_128[] = {
+    /* TYPEWRITER (Software Projects) */
     { ZX_ROW_Q_T, 4 }, { ZX_ROW_P_Y, 4 }, { ZX_ROW_P_Y, 0 }, { ZX_ROW_Q_T, 2 }, { ZX_ROW_Q_T, 1 },
     { ZX_ROW_Q_T, 3 }, { ZX_ROW_P_Y, 2 }, { ZX_ROW_Q_T, 4 }, { ZX_ROW_Q_T, 2 }, { ZX_ROW_Q_T, 3 },
-#endif
 };
-#define CHEAT_LEN ((int)(sizeof cheat_keys / sizeof cheat_keys[0]))
-#ifndef MM128
-#define TELEPORT_BIT 4          /* hold '6' */
-#define CHEAT_DONE   7
-#else
-#define TELEPORT_BIT 1          /* hold '9' */
-#define CHEAT_DONE   10
-#endif
+#define CHEAT_KEYS   (v128 ? cheat_keys_128 : cheat_keys_48)
+#define CHEAT_LEN    (v128 ? 10 : 7)
+#define CHEAT_DONE   (v128 ? 10 : 7)       /* KeyCounter value once typed */
+#define TELEPORT_BIT (v128 ? 1 : 4)        /* hold '9' (128) or '6' (48K) */
 static int macro_step = -1, macro_timer;
 
 /* Teleport macro. The game's teleport check reads the 0-6 row (activator
@@ -363,7 +397,7 @@ static void run_macros(void)
     if (macro_step >= 0) {
         /* Hold each digit for 8 frames then release for 8: the game checks
          * the keys once per main-loop pass (~3.5 frames). */
-        if (macro_timer < 8) set_bit(macro_keys, cheat_keys[macro_step].row, cheat_keys[macro_step].bit, 1);
+        if (macro_timer < 8) set_bit(macro_keys, CHEAT_KEYS[macro_step].row, CHEAT_KEYS[macro_step].bit, 1);
         if (++macro_timer >= 16) {
             macro_timer = 0;
             if (++macro_step >= CHEAT_LEN) macro_step = -1;
@@ -384,16 +418,11 @@ static void pad_button(int button, int down)
         break;
     case SDL_CONTROLLER_BUTTON_START:
         set_bit(pad_keys, ZX_ROW_ENTER_H, 0, down);        /* ENTER: start game */
-#ifdef MM128
-        set_bit(pad_keys, ZX_ROW_1_5, 3, down);            /* 4: leave the menu */
-#endif
+        if (v128) set_bit(pad_keys, ZX_ROW_1_5, 3, down);  /* 4: leave the menu */
         break;
     case SDL_CONTROLLER_BUTTON_Y:
-#ifndef MM128
-        set_bit(pad_keys, ZX_ROW_ENTER_H, 4, down);        /* H: music on/off */
-#else
-        set_bit(pad_keys, ZX_ROW_1_5, 0, down);            /* 1: menu / lives */
-#endif
+        if (!v128) set_bit(pad_keys, ZX_ROW_ENTER_H, 4, down);  /* H: music on/off */
+        else       set_bit(pad_keys, ZX_ROW_1_5, 0, down);      /* 1: menu / lives */
         break;
     case SDL_CONTROLLER_BUTTON_X:
         set_bit(pad_keys, ZX_ROW_A_G, 0, down);            /* A: pause */
@@ -437,13 +466,11 @@ static void read_pad_axes(void)
         HalReturnToFirmware(HalRebootRoutine);   /* 1; not the quick reboot (2) */
     }
 #endif
-#ifdef MM128
-    if (pad) {
+    if (v128 && pad) {
         /* Menu options 2 (air) and 3 (music) on the triggers. */
         set_bit(pad_keys, ZX_ROW_1_5, 1, SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000);
         set_bit(pad_keys, ZX_ROW_1_5, 2, SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000);
     }
-#endif
     if (pad) {
         int x = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX);
         left  = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT) || x < -12000;
@@ -451,6 +478,14 @@ static void read_pad_axes(void)
         fire  = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_A) ||
                 SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_B);
     }
+#if defined(HAVE_48) && defined(HAVE_128)
+    if (pad) {
+        int y = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY);
+        int dir = y < -16000 ? -1 : (y > 16000 ? 1 : 0);
+        if (dir != ui_stick_y) { if (dir < 0) ui_up = 1; if (dir > 0) ui_down = 1; }
+        ui_stick_y = dir;
+    }
+#endif
     if (right) joy |= 0x01;
     if (left)  joy |= 0x02;
     if (fire)  joy |= 0x10;
@@ -503,6 +538,14 @@ static void poll_input(void)
         case SDL_CONTROLLERBUTTONUP:
             if (!pad) pad = SDL_GameControllerFromInstanceID(e.cbutton.which);
             pad_button(e.cbutton.button, e.type == SDL_CONTROLLERBUTTONDOWN);
+#if defined(HAVE_48) && defined(HAVE_128)
+            if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) ui_up = 1;
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) ui_down = 1;
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A ||
+                    e.cbutton.button == SDL_CONTROLLER_BUTTON_START) ui_select = 1;
+            }
+#endif
             break;
 #ifndef NXDK
         case SDL_KEYDOWN:
@@ -510,6 +553,10 @@ static void poll_input(void)
             if (!e.key.repeat) {
                 if (e.key.keysym.sym == SDLK_ESCAPE) exit(0);
                 if (e.key.keysym.sym == SDLK_F1 && e.type == SDL_KEYDOWN) diag_on = !diag_on;
+#if defined(HAVE_48) && defined(HAVE_128)
+                if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_DOWN) ui_down = 1;
+                if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_UP) ui_up = 1;
+#endif
                 keyboard_key(e.key.keysym.sym, e.type == SDL_KEYDOWN);
             }
             break;
@@ -668,9 +715,9 @@ static void dbg_report(void)
 {
     fprintf(stderr, "frame %llu cavern %d cheat %d lives %d",
             (unsigned long long)frame_count, mem[CurrentCavernNumber], mem[KeyCounter], mem[LivesRemaining]);
-#ifdef MM128
-    fprintf(stderr, " lives-patch %d (53 = normal) menu-text '%.3s'", mem[PatchLivesDec], (const char *)mem + MenuLivesYesNo);
-#endif
+    if (v128)
+        fprintf(stderr, " lives-patch %d (53 = normal) menu-text '%.3s'", mem[MM128_PatchLivesDec],
+                (const char *)mem + MM128_MenuLivesYesNo);
     fprintf(stderr, "\n");
 }
 
@@ -781,6 +828,177 @@ static void fatal_screen(const char *line1, const char *line2)
     exit(1);
 }
 
+
+#if defined(HAVE_48) && defined(HAVE_128)
+/* ------------------------------------------------------------------------ */
+/* Chooser (combined build, both games present)                             */
+/*                                                                          */
+/* Built from Manic Miner's own title screen, which is in ManicMiner.bin:   */
+/* the house-and-sun picture, the MANIC MINER band and the piano keyboard,  */
+/* Willy walking at the top right, and the Blue Danube on the beeper with   */
+/* the piano keys lighting up (the same note loop and key mapping as        */
+/* PlayTheThemeTune). The bottom third holds the two choices, a scrolling   */
+/* banner and a hint line.                                                  */
+/* ------------------------------------------------------------------------ */
+
+static uint16_t ui_scr(int row, int col)
+{
+    return (uint16_t)(0x4000 | ((row & 0x18) << 8) | ((row & 7) << 5) | col);
+}
+
+static void ui_print(int row, int col, const char *s)
+{
+    for (; *s && col < 32; s++, col++) {
+        uint8_t ch = (uint8_t)*s;
+        if (ch < 32 || ch > 127) ch = ' ';
+        for (int py = 0; py < 8; py++)
+            mem[ui_scr(row, col) + (py << 8)] = mem[ROM_FONT + (ch - 32) * 8 + py];
+    }
+}
+
+static void ui_attr_row(int row, uint8_t a) { memset(mem + 0x5800 + row * 32, a, 32); }
+
+/* DrawASprite in overwrite mode (16x16, display-file addressing). */
+static void ui_sprite(uint16_t hl, uint16_t de)
+{
+    for (int b = 0; b < 16; b++) {
+        mem[hl] = mem[de++];
+        mem[(hl & 0xFF00) | (uint8_t)(hl + 1)] = mem[de++];
+        uint8_t h = (uint8_t)((hl >> 8) + 1), l = (uint8_t)hl;
+        if (!(h & 7)) {
+            h = (uint8_t)(h - 8);
+            l = (uint8_t)(l + 0x20);
+            if (!(l & 0xE0)) h = (uint8_t)(h + 8);
+        }
+        hl = (uint16_t)((h << 8) | l);
+    }
+}
+
+static void ui_options(int sel)
+{
+    static const char *names[2] = {
+        " MANIC MINER       BUG-BYTE 48K ",
+        " MANIC MINER 128       AY MUSIC ",
+    };
+    for (int i = 0; i < 2; i++) {
+        int row = 17 + 2 * i;
+        char line[40];
+        snprintf(line, sizeof line, "%s", names[i]);
+        line[0] = (i == sel) ? '>' : ' ';
+        ui_print(row, 0, line);
+        ui_attr_row(row, (i == sel) ? 0x30 : 0x46);   /* cavern-name bar / bright yellow */
+    }
+}
+
+/* Handle latched input; returns 1 if a game was chosen. */
+static int ui_input(int *sel)
+{
+    int up = ui_up, down = ui_down, go = ui_select;
+    ui_up = ui_down = ui_select = 0;
+    /* Spectrum keys too: 7 = up, 6 = down (cursor keys), ENTER / 0 = go. */
+    static uint8_t prev_06 = 0x1F, prev_enter = 0x1F;
+    uint8_t k06 = zx_keys[ZX_ROW_0_6], ken = zx_keys[ZX_ROW_ENTER_H];
+    if ((prev_06 & 0x08) && !(k06 & 0x08)) up = 1;
+    if ((prev_06 & 0x10) && !(k06 & 0x10)) down = 1;
+    if (((prev_06 & 0x01) && !(k06 & 0x01)) || ((prev_enter & 0x01) && !(ken & 0x01))) go = 1;
+    prev_06 = k06; prev_enter = ken;
+    if (up || down) { *sel ^= 1; ui_options(*sel); }
+    return go;
+}
+
+/* CalcAFAForPianoKey */
+static uint16_t ui_piano(uint8_t a)
+{
+    a = (uint8_t)(a - 8);
+    a = (uint8_t)((a >> 3) | (a << 5));
+    a = (uint8_t)(~a | 0xE0);
+    return (uint16_t)(0x5900 | a);
+}
+
+/* One note of the theme tune (PlayTheThemeTune's loop, T-state timed). */
+static void ui_note(uint16_t iy)
+{
+    uint8_t c = mem[iy], d = mem[iy + 1], e = mem[iy + 2], b = 0;
+    mem[ui_piano(d)] = 80;
+    uint16_t key = ui_piano(e);
+    mem[key] = 40;
+    uint8_t a = (uint8_t)key;
+    zx_tick(150);
+    for (;;) {
+        zx_out(0x00FE, a);
+        zx_tick(11 + 4);
+        if (--d == 0) { d = mem[iy + 1]; a ^= 24; zx_tick(7 + 19 + 7); } else zx_tick(12);
+        zx_tick(4);
+        if (--e == 0) { e = mem[iy + 2]; a ^= 24; zx_tick(7 + 19 + 7); } else zx_tick(12);
+        if (--b) { zx_tick(13); continue; }
+        zx_tick(8 + 4);
+        if (--c) { zx_tick(12); continue; }
+        zx_tick(7);
+        break;
+    }
+    mem[ui_piano(mem[iy + 1])] = 56;
+    mem[ui_piano(mem[iy + 2])] = 56;
+    zx_tick(200);
+}
+
+static int launcher(void)
+{
+    int sel = 0;
+    static const char banner[] =
+        "                                "
+        ".  .  .  .  .  .  .  CHOOSE YOUR MINE  .  .  .  "
+        "MANIC MINER . . BUG-BYTE ltd. 1983 . . By Matthew Smith  .  .  .  "
+        "MANIC MINER 128 . . AY music by Mihai Novitchi . . fixes by Bob Fossil  .  .  .  "
+        "D-pad to choose . . A or START to play . . "
+        "LT+RT+BACK+START to reset  .  .  .  .  .  .  .  "
+        "                                ";
+    int banner_len = (int)sizeof banner - 1;
+
+    /* The title screen, as Start draws it. */
+    memset(mem + 0x4000, 0, 0x1800);
+    memcpy(mem + 0x4000, mem + TitleScreenDataTop, 0x1000);
+    memcpy(mem + 0x5800, mem + TheFinalBarrierData, 0x100);
+    memcpy(mem + 0x5900, mem + BottomAttributes, 0x200);
+    ui_sprite(0x483D, WillySpriteData1);
+    /* Bottom third: the chooser. */
+    for (int row = 16; row < 24; row++) ui_attr_row(row, 0x00);
+    ui_options(sel);
+    ui_print(23, 0, "  D-PAD: CHOOSE   A/START: PLAY ");
+    ui_attr_row(23, 0x45);
+    ui_attr_row(21, 0x46);
+    ui_up = ui_down = ui_select = 0;
+
+    for (;;) {
+        /* The Blue Danube, as on the title screen. */
+        for (uint16_t iy = TitleScreenTuneData; mem[iy] != 0xFF; iy = (uint16_t)(iy + 3)) {
+            ui_note(iy);
+            if (ui_input(&sel)) goto chosen;
+        }
+        /* Then the banner scrolls past while Willy walks. */
+        for (int i = 0; i + 32 <= banner_len; i++) {
+            char window[33];
+            memcpy(window, banner + i, 32);
+            window[32] = 0;
+            ui_print(21, 0, window);
+            ui_sprite(0x483D, (uint16_t)(WillySpriteData | (((i & 6) >> 3 | (i & 6) << 5) & 0xFF)));
+            zx_tick(100 * (256 * 13 + 16));      /* ~0.1 s, as Start4 */
+            if (ui_input(&sel)) goto chosen;
+        }
+    }
+chosen:
+    /* Wait for the button to be released so the game's own title screen
+     * doesn't see it as "start" straight away. */
+    for (int i = 0; i < 100; i++) {
+        zx_tick((int32_t)zx_t_per_frame);
+        int held = !(zx_keys[ZX_ROW_ENTER_H] & 1) || !(zx_keys[ZX_ROW_0_6] & 1) ||
+                   !(zx_keys[ZX_ROW_SPACE_B] & 4) || (zx_kempston & 0x10);
+        if (!held) break;
+    }
+    zx_out(0x00FE, 0);
+    return sel;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -813,44 +1031,13 @@ int main(int argc, char **argv)
     for (int i = 0; i < SDL_NumJoysticks(); i++)
         if (SDL_IsGameController(i) && !pad) pad = SDL_GameControllerOpen(i);
 
-    zx_reset();
-#ifdef MM128
-    zx_set_model(ZX_MODEL_128K);
-#else
-    zx_set_model(ZX_MODEL_48K);
-#endif
-    memset(mem, 0, sizeof mem);
-#ifdef MM128
-    ay_init(&ay, AY_CLOCK_128K, AUDIO_RATE);
-#endif
-
     /* Optional 48K ROM for the authentic character set. */
     static uint8_t rom[0x4000];
     int have_rom = load_file(DATA_DIR "48.rom", rom, sizeof rom) == (long)sizeof rom;
-    mm_install_font(have_rom ? rom : NULL);
 
-    static uint8_t image[65536];
-#ifndef MM128
-    /* The game: a 64K memory image of the original, loaded at address 0. */
-    long n = load_file(DATA_DIR "ManicMiner.bin", image, sizeof image);
-    if (n != 65536)
-        fatal_screen(n < 0 ? "ManicMiner.bin not found." : "ManicMiner.bin is not 64K.",
-                     "See README for where to get it.");
-    if (image[AppEntry] != 0xF3 || memcmp(image + CentralCavernData + 0x200 + 9, "Central Cavern", 14) != 0)
-        fatal_screen("ManicMiner.bin doesn't look", "like Manic Miner (48K).");
-#else
-    /* The game: the original tape, unpacked exactly as its loader does. */
-    static uint8_t tap[65536];
-    long n = load_file(DATA_DIR "ManicMiner128.tap", tap, sizeof tap);
-    if (n < 0)
-        fatal_screen("ManicMiner128.tap not found.", "See README for where to get it.");
-    int r = mm128_build_image(tap, n, image);
-    if (r == MM128_ERR_TAP)
-        fatal_screen("ManicMiner128.tap: not a", "valid TAP file.");
-    if (r != MM128_OK)
-        fatal_screen("Unsupported Manic Miner 128", "tape (SP version needed).");
-#endif
-    memcpy(mem + 0x4000, image + 0x4000, 0xC000);   /* keep our ROM area */
+    zx_reset();
+    memset(mem, 0, sizeof mem);
+    mm_install_font(have_rom ? rom : NULL);
 
 #ifndef NXDK
     dbg_fast = getenv("MM_FAST") != NULL;
@@ -861,9 +1048,82 @@ int main(int argc, char **argv)
     dbg_teleport = getenv("MM_TELEPORT_AT");
     if (getenv("MM_DIAG")) diag_on = 1;
 #endif
-
-    zx_in_filter = teleport_in_filter;
     zx_frame_hook = frame_hook;
-    mm_run();          /* never returns */
+
+    /* Look for the games. */
+#ifdef HAVE_48
+    static uint8_t image48[65536];
+#endif
+#ifdef HAVE_128
+    static uint8_t image128[65536];
+#endif
+    int ok48 = 0, ok128 = 0;
+    const char *err1 = NULL, *err2 = NULL;
+#ifdef HAVE_48
+    {
+        long n = load_file(DATA_DIR "ManicMiner.bin", image48, sizeof image48);
+        if (n == 65536 && image48[AppEntry] == 0xF3 &&
+            !memcmp(image48 + CentralCavernData + 0x200 + 9, "Central Cavern", 14))
+            ok48 = 1;
+        else if (n >= 0) { err1 = "ManicMiner.bin isn't the 64K"; err2 = "Manic Miner image (see README)."; }
+    }
+#endif
+#ifdef HAVE_128
+    {
+        static uint8_t tap[65536];
+        long n = load_file(DATA_DIR "ManicMiner128.tap", tap, sizeof tap);
+        if (n >= 0) {
+            int r = mm128_build_image(tap, n, image128);
+            if (r == MM128_OK) ok128 = 1;
+            else if (r == MM128_ERR_TAP) { err1 = "ManicMiner128.tap: not a"; err2 = "valid TAP file."; }
+            else { err1 = "Unsupported Manic Miner 128"; err2 = "tape (SP version needed)."; }
+        }
+    }
+#endif
+    if (!ok48 && !ok128) {
+        if (!err1) {
+#if defined(HAVE_48) && defined(HAVE_128)
+            err1 = "Put ManicMiner.bin and/or"; err2 = "ManicMiner128.tap by the XBE.";
+#elif defined(HAVE_128)
+            err1 = "ManicMiner128.tap not found."; err2 = "See README for where to get it.";
+#else
+            err1 = "ManicMiner.bin not found."; err2 = "See README for where to get it.";
+#endif
+        }
+        fatal_screen(err1, err2);
+    }
+
+    int choose128 = ok128 && !ok48;
+#if defined(HAVE_48) && defined(HAVE_128)
+    if (ok48 && ok128) {
+        /* Both present: the chooser, built from Manic Miner's own title
+         * screen (so it needs the 48K image in memory). */
+        memcpy(mem + 0x4000, image48 + 0x4000, 0xC000);
+        zx_set_model(ZX_MODEL_48K);
+        choose128 = launcher();
+    }
+    v128 = choose128;
+#endif
+    (void)choose128;
+
+    /* Start the chosen game from a clean machine. */
+    zx_reset();
+    stats_t0_us = 0;
+    memset(mem, 0, sizeof mem);
+    mm_install_font(have_rom ? rom : NULL);
+    zx_in_filter = teleport_in_filter;
+#ifdef HAVE_128
+    if (v128) {
+        zx_set_model(ZX_MODEL_128K);
+        ay_init(&ay, AY_CLOCK_128K, AUDIO_RATE);
+        memcpy(mem + 0x4000, image128 + 0x4000, 0xC000);   /* keep our ROM area */
+        mm_run128();                                        /* never returns */
+    }
+#endif
+#ifdef HAVE_48
+    zx_set_model(ZX_MODEL_48K);
+    memcpy(mem + 0x4000, image48 + 0x4000, 0xC000);
+    mm_run48();                                             /* never returns */
+#endif
     return 0;
 }
