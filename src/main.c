@@ -67,14 +67,16 @@ static uint64_t perf_next;          /* wall-clock pacing when there is no audio 
  * draw time, frames drawn and skipped. */
 static int      diag_on;
 static unsigned diag_underruns, diag_skipped, diag_drawn;
-static double   diag_draw_ms;
+static unsigned diag_draw_us;
 
 /* ------------------------------------------------------------------------ */
 /* Audio output                                                             */
 /* ------------------------------------------------------------------------ */
 static int audio_ok;
-static uint64_t audio_rate_t0, audio_rate_samples;
-static double   audio_rate_measured;
+/* Diagnostics measured over ~2 s windows of wall-clock time. Integers
+ * only: nxdk's printf has no floating-point formatting. */
+static uint64_t stats_t0_us, stats_samples, stats_frames, stats_t0_z, stats_t0_contended;
+static unsigned stats_rate_hz, stats_fps_x100, stats_contention_pct10;
 
 #ifdef NXDK
 /* The Xbox's AC97 controller fed directly, one buffer per Spectrum frame,
@@ -166,18 +168,41 @@ static void audio_submit(const int16_t *buf, int frames)
 }
 #endif
 
-/* Measured playback rate: samples consumed per wall-clock second (while
- * the queue level is steady, submitted == consumed). Should read 48000. */
-static void audio_measure(int frames)
+/* Wall-clock time in microseconds. On the Xbox this is the kernel's
+ * system time, independent of the audio hardware and of the performance
+ * counter. */
+static uint64_t now_us(void)
 {
-    uint64_t now = SDL_GetPerformanceCounter();
-    if (!audio_rate_t0) { audio_rate_t0 = now; audio_rate_samples = 0; return; }
-    audio_rate_samples += (uint64_t)frames;
-    double secs = (double)(now - audio_rate_t0) / (double)SDL_GetPerformanceFrequency();
-    if (secs >= 2.0) {
-        audio_rate_measured = (double)audio_rate_samples / secs;
-        audio_rate_t0 = now;
-        audio_rate_samples = 0;
+#ifdef NXDK
+    LARGE_INTEGER t;
+    KeQuerySystemTime(&t);
+    return (uint64_t)t.QuadPart / 10;
+#else
+    return (uint64_t)((double)SDL_GetPerformanceCounter() * 1e6 / (double)SDL_GetPerformanceFrequency());
+#endif
+}
+
+/* Per-frame statistics: playback rate (samples consumed per second; while
+ * the queue level is steady, submitted == consumed), emulated frames per
+ * second, and the share of emulated time spent in ULA contention. */
+static void stats_frame(int samples)
+{
+    uint64_t now = now_us();
+    if (!stats_t0_us) {
+        stats_t0_us = now; stats_samples = 0; stats_frames = 0;
+        stats_t0_z = zx_t; stats_t0_contended = zx_contended_t;
+        return;
+    }
+    stats_samples += (uint64_t)samples;
+    stats_frames++;
+    uint64_t dt = now - stats_t0_us;
+    if (dt >= 2000000) {
+        stats_rate_hz = (unsigned)(stats_samples * 1000000 / dt);
+        stats_fps_x100 = (unsigned)(stats_frames * 100000000 / dt);
+        uint64_t dz = zx_t - stats_t0_z, dc = zx_contended_t - stats_t0_contended;
+        stats_contention_pct10 = dz ? (unsigned)(dc * 1000 / dz) : 0;
+        stats_t0_us = now; stats_samples = 0; stats_frames = 0;
+        stats_t0_z = zx_t; stats_t0_contended = zx_contended_t;
     }
 }
 
@@ -247,7 +272,7 @@ static void render_audio(void)
 #endif
 
     audio_submit(audio_buf, n);
-    audio_measure(n);
+    stats_frame(n);
 #ifndef NXDK
     {
         /* MM_PCM=<file>: also append raw 48 kHz s16 stereo to a file. */
@@ -536,10 +561,20 @@ static void draw_text(uint32_t *dst, int pitch, int scale, int x, int y, const c
     }
 }
 
-static void diag_line(char *buf, size_t len)
+/* The overlay: a box of labelled lines, drawn inside the TV-safe area. */
+static void draw_diag(uint32_t *dst, int pitch, int scale, int x0, int y0)
 {
-    snprintf(buf, len, "Q%3ums U%-4u D%4.1fms S%-5u R%5.0fHz", audio_queued_ms(), diag_underruns,
-             diag_draw_ms, diag_skipped, audio_rate_measured);
+    char lines[6][48];
+    unsigned exp_fps_x100 = (unsigned)((uint64_t)ZX_CPU_HZ * 100 / ZX_T_PER_FRAME);
+    snprintf(lines[0], 48, " SPEED %3u.%02u FPS (REAL %u.%02u) ", stats_fps_x100 / 100, stats_fps_x100 % 100,
+             exp_fps_x100 / 100, exp_fps_x100 % 100);
+    snprintf(lines[1], 48, " AUDIO RATE %5u HZ (48000)    ", stats_rate_hz);
+    snprintf(lines[2], 48, " AUDIO QUEUED %3u MS  GAPS %-5u", audio_queued_ms(), diag_underruns);
+    snprintf(lines[3], 48, " DRAW %2u.%u MS  SKIPPED %-8u", diag_draw_us / 1000, (diag_draw_us / 100) % 10, diag_skipped);
+    snprintf(lines[4], 48, " ULA CONTENTION %2u.%u%%          ", stats_contention_pct10 / 10, stats_contention_pct10 % 10);
+    snprintf(lines[5], 48, "                               ");
+    for (int i = 0; i < 6; i++)
+        draw_text(dst, pitch, scale, x0, y0 + i * 10 * scale, lines[i], 0xFFFFFFFF, 0xFF0000A0);
 }
 
 #ifdef NXDK
@@ -566,13 +601,11 @@ static void present(void)
             diag_drawn++;
         }
         if (diag_on) {
-            char buf[64];
-            diag_line(buf, sizeof buf);
-            draw_text(fb, vm.width, 2, 16, 8, buf, 0xFFFFFFFF, 0xFF000000);
+            draw_diag(fb, vm.width, 2, 64, 64);
         }
         XVideoFlushFB();
         double ms = (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
-        diag_draw_ms = diag_draw_ms * 0.9 + ms * 0.1;
+        diag_draw_us = (unsigned)((diag_draw_us * 9 + (unsigned)(ms * 1000.0)) / 10);
     }
 }
 #else
@@ -583,9 +616,7 @@ static void present(void)
     uint64_t t0 = SDL_GetPerformanceCounter();
     zx_render(frame_pixels, ZX_SCREEN_W, flash);
     if (diag_on) {
-        char buf[64];
-        diag_line(buf, sizeof buf);
-        draw_text(frame_pixels, ZX_SCREEN_W, 1, 8, 4, buf, 0xFFFFFFFF, 0xFF000000);
+        draw_diag(frame_pixels, ZX_SCREEN_W, 1, 32, 32);
     }
     SDL_UpdateTexture(texture, NULL, frame_pixels, ZX_SCREEN_W * 4);
     SDL_RenderClear(renderer);
@@ -593,7 +624,7 @@ static void present(void)
     SDL_RenderPresent(renderer);
     diag_drawn++;
     double ms = (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
-    diag_draw_ms = diag_draw_ms * 0.9 + ms * 0.1;
+    diag_draw_us = (unsigned)((diag_draw_us * 9 + (unsigned)(ms * 1000.0)) / 10);
 }
 #endif
 
@@ -783,6 +814,11 @@ int main(int argc, char **argv)
         if (SDL_IsGameController(i) && !pad) pad = SDL_GameControllerOpen(i);
 
     zx_reset();
+#ifdef MM128
+    zx_set_model(ZX_MODEL_128K);
+#else
+    zx_set_model(ZX_MODEL_48K);
+#endif
     memset(mem, 0, sizeof mem);
 #ifdef MM128
     ay_init(&ay, AY_CLOCK_128K, AUDIO_RATE);

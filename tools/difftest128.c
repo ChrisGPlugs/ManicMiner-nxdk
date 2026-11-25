@@ -28,7 +28,7 @@
 #define AFTER_PLAY    40103     /* POP IY, right after CALL 49158 */
 
 static long pass_no = -1, max_passes;
-static int scripted_play;
+static int scripted_play, idle_game;
 static uint32_t rng;
 static uint64_t last_t;
 static FILE *aylog;
@@ -51,6 +51,7 @@ static void set_inputs(long pass)
     zx_kempston = 0;
     menu_answer_count = 0;
     if (!scripted_play) return;
+    if (idle_game) { if (pass < 0) zx_key(ZX_ROW_ENTER_H, 0, 1); return; }
     if (pass < 0) { zx_key(ZX_ROW_ENTER_H, 0, 1); return; }
 
     long phase = pass % 600;
@@ -210,11 +211,15 @@ int main(int argc, char **argv)
     if (!f) { fprintf(stderr, "cannot read %s\n", tap_path); return 2; }
     long n = (long)fread(tap, 1, sizeof tap, f);
     fclose(f);
+    if (!strcmp(argv[2], "idle")) { scripted_play = 1; idle_game = 1; }
     if (!strncmp(argv[2], "play:", 5)) { scripted_play = 1; rng = (uint32_t)atoi(argv[2] + 5); }
     max_passes = atol(argv[3]);
     aylog = fopen(argv[4], "w");
 
     zx_reset();
+    /* The reference Z80 core has no ULA contention: compare like with like. */
+    zx_contention = (getenv("MM_CONTEND") && *getenv("MM_CONTEND") == '1') ? 1 : 0;
+    zx_set_model(ZX_MODEL_128K);
     if (mm128_build_image(tap, n, mem) != MM128_OK) { fprintf(stderr, "bad tape\n"); return 2; }
     memset(mem, 0, 0x4000);
     mm_install_font(NULL);

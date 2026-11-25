@@ -8,7 +8,24 @@
 
 uint8_t  mem[65536];
 uint64_t zx_t;
-uint64_t zx_next_frame = ZX_T_PER_FRAME;
+uint32_t zx_cpu_hz = 3500000;
+uint32_t zx_t_per_frame = 69888;
+uint32_t zx_contend_start = 14335;
+uint32_t zx_t_per_line = 224;
+uint64_t zx_next_frame = 69888;
+int      zx_contention = 1;
+uint64_t zx_contended_t;
+uint32_t zx_contend_frac;
+
+void zx_set_model(zx_model_t model)
+{
+    if (model == ZX_MODEL_128K) {
+        zx_cpu_hz = 3546900; zx_t_per_frame = 70908; zx_contend_start = 14361; zx_t_per_line = 228;
+    } else {
+        zx_cpu_hz = 3500000; zx_t_per_frame = 69888; zx_contend_start = 14335; zx_t_per_line = 224;
+    }
+    zx_next_frame = zx_t + zx_t_per_frame;
+}
 
 uint8_t zx_keys[8];
 uint8_t zx_kempston;
@@ -35,6 +52,7 @@ void zx_reset(void)
 {
     zx_t = 0;
     zx_next_frame = ZX_T_PER_FRAME;
+    zx_contended_t = 0;
     zx_keys_clear();
     zx_kempston = 0;
     zx_border = 0;

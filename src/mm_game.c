@@ -28,7 +28,10 @@
 #include "st_player.h"
 #endif
 
-#define M(a)  mem[(uint16_t)(a)]
+/* Every data access goes through zx_mem(), which applies ULA contention for
+ * 0x4000-0x7FFF (where all of Manic Miner's buffers live). Instruction
+ * fetches and the stack are in uncontended memory (0x8000 up). */
+#define M(a)  (*zx_mem((uint16_t)(a)))
 #define T(n)  zx_tick(n)
 
 #ifndef MM128
@@ -61,18 +64,48 @@ static inline void wr16(uint16_t a, uint16_t v) { M(a) = (uint8_t)v; M(a + 1) = 
 static inline uint8_t rotl(uint8_t v, int n) { return (uint8_t)((v << n) | (v >> (8 - n))); }
 static inline uint8_t rotr(uint8_t v, int n) { return (uint8_t)((v >> n) | (v << (8 - n))); }
 
-/* Port I/O with the Z80 cost of the IN/OUT instruction. */
-static inline uint8_t in_port(uint16_t port) { uint8_t v = zx_in(port); T(12); return v; }
-static inline void out254(uint8_t a) { zx_out(0x00FE, a); T(11); }
+/* Port I/O with the Z80 cost of the IN/OUT instruction (the I/O cycle,
+ * contended for the ULA's ports, comes after the opcode fetches). */
+static inline uint8_t in_port(uint16_t port)
+{
+    T(8);
+    zx_contend_io(port);
+    uint8_t v = zx_in(port);
+    T(4);
+    return v;
+}
+static inline void out254(uint8_t a)
+{
+    T(7);
+    zx_contend_io(0x00FE);
+    zx_out(0x00FE, a);
+    T(4);
+}
 
 /* LDIR: byte-by-byte forward copy (so overlapping fills work as on the Z80).
  * BC=0 means 65536, as on the real CPU. */
 static void ldir(uint16_t hl, uint16_t de, uint16_t bc)
 {
     uint32_t n = bc ? bc : 65536u;
-    for (uint32_t i = 0; i < n; i++)
-        M(de++) = M(hl++);
-    T(21 * n - 5);
+    if (!zx_contention) {
+        for (uint32_t i = 0; i < n; i++, hl++, de++)
+            mem[de] = mem[hl];
+        T(21 * n - 5);
+        return;
+    }
+    /* Per byte: pc:4, pc+1:4, hl:3, de:3, de:1 x2, and when repeating
+     * de:1 x5 (the PC is in uncontended memory). */
+    for (uint32_t i = 0; i < n; i++, hl++, de++) {
+        T(8);
+        zx_contend(hl); T(3);
+        uint8_t v = mem[hl];
+        zx_contend(de); T(3);
+        mem[de] = v;
+        zx_contend(de); T(1);
+        zx_contend(de); T(1);
+        if (i + 1 < n)
+            for (int k = 0; k < 5; k++) { zx_contend(de); T(1); }
+    }
 }
 
 /* Fill using the LD (HL),A / LDIR idiom: dst[0]=v then copy forward. */

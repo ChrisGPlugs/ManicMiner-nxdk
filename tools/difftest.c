@@ -32,7 +32,7 @@ static long    pass_no = -1;
 static long    max_passes;
 static long    dump_pass = -1;
 static const char *dump_file;
-static int     scripted_play;
+static int     scripted_play, idle_game;
 static int     finale;
 static uint32_t rng;
 static uint64_t last_t;
@@ -54,7 +54,8 @@ static void set_inputs(long pass)
 {
     zx_keys_clear();
     zx_kempston = 0;
-    if (!scripted_play) return;              /* demo: never touch anything */
+    if (!scripted_play) return;
+    if (idle_game) { if (pass < 0) zx_key(ZX_ROW_ENTER_H, 0, 1); return; }              /* demo: never touch anything */
 
     if (pass < 0) { zx_key(ZX_ROW_ENTER_H, 0, 1); return; }   /* start game */
 
@@ -156,12 +157,15 @@ int main(int argc, char **argv)
     FILE *f = fopen(bin_path, "rb");
     if (!f || fread(bin, 1, 65536, f) != 65536) { fprintf(stderr, "cannot read %s\n", bin_path); return 2; }
     fclose(f);
+    if (!strcmp(argv[2], "idle")) { scripted_play = 1; idle_game = 1; }
     if (!strncmp(argv[2], "play:", 5)) { scripted_play = 1; rng = (uint32_t)atoi(argv[2] + 5); }
     if (!strcmp(argv[2], "finale")) { scripted_play = 1; finale = 1; rng = 99; }
     max_passes = atol(argv[3]);
     if (argc >= 6) { dump_pass = atol(argv[4]); dump_file = argv[5]; }
 
     zx_reset();
+    /* The reference Z80 core has no ULA contention: compare like with like. */
+    zx_contention = (getenv("MM_CONTEND") && *getenv("MM_CONTEND") == '1') ? 1 : 0;
     memcpy(mem, bin, 65536);
     mm_install_font(NULL);
     set_inputs(-1);

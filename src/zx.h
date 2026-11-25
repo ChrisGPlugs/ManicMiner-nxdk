@@ -14,8 +14,15 @@
 
 #include <stdint.h>
 
-#define ZX_CPU_HZ        3500000u
-#define ZX_T_PER_FRAME   69888u          /* 48K Spectrum: 224 T * 312 lines */
+/* Machine timing (set by zx_set_model). */
+typedef enum { ZX_MODEL_48K, ZX_MODEL_128K } zx_model_t;
+extern uint32_t zx_cpu_hz;               /* 3500000 (48K) / 3546900 (128K) */
+extern uint32_t zx_t_per_frame;          /* 69888 (48K) / 70908 (128K) */
+extern uint32_t zx_contend_start;        /* first contended T-state of a frame */
+extern uint32_t zx_t_per_line;           /* 224 (48K) / 228 (128K) */
+#define ZX_CPU_HZ      zx_cpu_hz
+#define ZX_T_PER_FRAME zx_t_per_frame
+void zx_set_model(zx_model_t model);
 
 /* Full 64K address space, original memory map. */
 extern uint8_t mem[65536];
@@ -31,6 +38,66 @@ static inline void zx_tick(int32_t t)
     zx_t = (uint64_t)((int64_t)zx_t + t);
     if (zx_t >= zx_next_frame)
         zx_frame();
+}
+
+/* ULA memory contention. While the ULA fetches the screen (the first 128
+ * T-states of each of the 192 display lines), a CPU access to
+ * 0x4000-0x7FFF waits 6,5,4,3,2,1,0,0 T-states depending on where in the
+ * 8-T fetch cycle it lands. Manic Miner keeps its screen and attribute
+ * buffers in that region, so this slows the real game by about a quarter.
+ * The comparison tests switch it off (zx_contention = 0) because the
+ * reference Z80 core doesn't model it. */
+extern int      zx_contention;
+extern uint64_t zx_contended_t;          /* total delay added (diagnostics) */
+static inline void zx_contend_now(void)
+{
+    uint32_t ft = (uint32_t)(zx_t - (zx_next_frame - zx_t_per_frame));
+    if (ft < zx_contend_start) return;
+    uint32_t d = ft - zx_contend_start;
+    uint32_t line = d / zx_t_per_line;
+    if (line >= 192) return;
+    uint32_t x = d - line * zx_t_per_line;
+    if (x >= 128) return;
+    static const uint8_t pattern[8] = { 6, 5, 4, 3, 2, 1, 0, 0 };
+    uint8_t delay = pattern[x & 7];
+    if (delay) { zx_contended_t += delay; zx_tick(delay); }
+}
+/* Exact contention at the current T-state: used where the translation
+ * advances the clock cycle by cycle (LDIR, port I/O). */
+static inline void zx_contend(uint16_t addr)
+{
+    if (zx_contention && (addr & 0xC000) == 0x4000) zx_contend_now();
+}
+/* Expected contention: the translated routines make their memory accesses
+ * in bursts and charge the instruction T-states afterwards, so the exact
+ * pattern would let every access after the first in a burst through for
+ * free. Instead, an access made while the ULA is fetching the screen costs
+ * the pattern's average, 21/8 T-states, carried as a fraction. */
+extern uint32_t zx_contend_frac;
+static inline void zx_contend_avg(uint16_t addr)
+{
+    if (!zx_contention || (addr & 0xC000) != 0x4000) return;
+    uint32_t ft = (uint32_t)(zx_t - (zx_next_frame - zx_t_per_frame));
+    if (ft < zx_contend_start) return;
+    uint32_t d = ft - zx_contend_start;
+    uint32_t line = d / zx_t_per_line;
+    if (line >= 192 || d - line * zx_t_per_line >= 128) return;
+    zx_contend_frac += 21;
+    uint32_t delay = zx_contend_frac >> 3;
+    zx_contend_frac &= 7;
+    if (delay) { zx_contended_t += delay; zx_tick((int32_t)delay); }
+}
+/* A data access to memory, as made by the game code: contention, then the
+ * byte itself. */
+static inline uint8_t *zx_mem(uint16_t addr)
+{
+    zx_contend_avg(addr);
+    return &mem[addr];
+}
+/* I/O to the ULA (even port): contended like a memory access. */
+static inline void zx_contend_io(uint16_t port)
+{
+    if (zx_contention && (!(port & 1) || (port & 0xC000) == 0x4000)) zx_contend_now();
 }
 
 /* Port I/O, as seen by the game. */

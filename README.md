@@ -76,15 +76,24 @@ The desktop build maps the PC keyboard onto the Spectrum keyboard (arrow keys al
 
 The game is paced by its sound: the emulated Spectrum runs only as fast as its audio is played, with about 80 ms queued. On the Xbox the AC97 controller is fed directly (not through SDL's audio thread): one DMA buffer per Spectrum frame in a ring of 32, with the queue level read from the controller's Current Index register. Speed and pitch therefore follow the 48 kHz hardware clock exactly. The picture is drawn straight into the framebuffer at 2×, and only when the Spectrum screen has changed. If the queue drops below ~40 ms, frames are emulated without being drawn until it recovers, so the sound never waits for the picture.
 
-Clicking the left stick shows a diagnostics line at the top of the screen:
+**Memory contention.** A real Spectrum's ULA delays CPU access to 0x4000–0x7FFF while it fetches the screen (6,5,4,3,2,1,0,0 T-states across each 8-T cycle, for the first 128 T-states of each display line). Manic Miner keeps its screen and attribute buffers there and copies about 9 KB through them every pass, so contention slows the real game by about 20%. The port models it: `LDIR` cycle by cycle (`hl:3, de:3, de:1×2, de:1×5`), ULA port I/O exactly, and other buffer accesses at the pattern's average of 21/8 T-states. 48K timing is used for Manic Miner and 128K timing (70,908-T frames at 3.5469 MHz) for Manic Miner 128. The comparison tests switch contention off, because the reference Z80 core doesn't model it.
 
-| Field | Meaning |
+A stopwatch check against a real Spectrum or a contention-accurate emulator such as JSSpeccy: start a game and don't touch anything. In Central Cavern, Willy dies when the air runs out:
+
+| Version | Cavern appears → Willy dies of lack of air |
 |---|---|
-| `Q` | audio currently queued (ms); should hover around 60–80 |
-| `U` | underruns: times the queue ran dry. Each is an audible gap; should stay at 0 |
-| `D` | average time to draw a frame (ms) |
-| `S` | frames emulated without drawing, to catch up |
-| `R` | measured playback rate (samples per second); should read about 48000. Anything else means the game runs fast or slow by that ratio |
+| Manic Miner (48K) | 154 s (128 s without contention) |
+| Manic Miner 128 (128K machine) | 144 s (117 s without contention) |
+
+Clicking the left stick shows a diagnostics box:
+
+| Line | Meaning |
+|---|---|
+| `SPEED` | emulated frames per second, timed by the Xbox's system clock; should match the `REAL` figure (50.08 on 48K, 50.02 on 128K) |
+| `AUDIO RATE` | samples played per second; should read about 48000 |
+| `AUDIO QUEUED` / `GAPS` | audio waiting to play (~60–100 ms), and how many times it ran dry (each is an audible gap; should stay 0) |
+| `DRAW` / `SKIPPED` | average time to draw a frame; frames emulated without drawing, to catch up |
+| `ULA CONTENTION` | share of emulated time spent waiting for the ULA (about 17%) |
 
 ## Desktop build (for development)
 
