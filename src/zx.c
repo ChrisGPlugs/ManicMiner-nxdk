@@ -40,6 +40,7 @@ void (*zx_frame_hook)(void);
 /* Test hooks used by mm_game.c (shared by both engines in the combined build). */
 void (*mm_mainloop_hook)(void);
 void (*mm_music_tick_hook)(void);
+void (*mm_game_over_hook)(void);
 int mm_in_title;
 /* Re-entrancy guard for zx_frame (file scope so zx_reset can clear it if
  * the host leaves the game from inside a frame hook with longjmp). */

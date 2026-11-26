@@ -52,6 +52,7 @@
 #include "mm_mem.h"          /* Bug-Byte addresses (shared ones are identical) */
 #include "mm_game.h"
 #include "mm_font.h"
+#include "hiscore.h"
 #ifdef HAVE_128
 #include "ay.h"
 #include "mm128_load.h"
@@ -720,6 +721,7 @@ static void pace(void)
  *   MM_KEYS=<f>:<c>,...    hold key c ('1'-'9', '0', a-z, '#' for ENTER, '!' for pad Back)
  *                          for 10 frames starting at frame f
  *   MM_TELEPORT_AT=<f>,... press Black (teleport forward) at frame f
+ *   MM_SET_SCORE=<f>:<dddddd>  overwrite the score digits at frame f (high-score tests)
  *   MM_REPORT=1            print cavern / cheat / menu-patch state on exit
  *   MM_DIAG=1              start with the diagnostics overlay on (F1) */
 static int  dbg_fast;
@@ -727,6 +729,7 @@ static long dbg_exit_after = -1, dbg_enter_at = -1;
 static const char *dbg_shots;
 static const char *dbg_keys;
 static const char *dbg_teleport;
+static const char *dbg_set_score;
 
 static void dbg_report(void)
 {
@@ -783,15 +786,69 @@ static void debug_frame(void)
         snprintf(list, sizeof list, ",%s,", dbg_teleport);
         if (strstr(list, want)) start_teleport(1);
     }
+    if (dbg_set_score && strtol(dbg_set_score, NULL, 10) == (long)frame_count) {
+        const char *d = strchr(dbg_set_score, ':');
+        if (d && strlen(d + 1) >= 6) memcpy(&mem[Score2 + 3], d + 1, 6);
+    }
     if (getenv("MM_REPORT") && frame_count % 100 == 0) dbg_report();
     if (dbg_exit_after >= 0 && (long)frame_count >= dbg_exit_after) exit(0);
 }
 #endif
 
+/* ------------------------------------------------------------------------ */
+/* Saved high scores                                                        */
+/* ------------------------------------------------------------------------ */
+/* One high score per game, saved in the Xbox save area (hiscore.c). It is
+ * loaded into the game's HighScore before the game starts, and saved when
+ * a game ends with a better score, unless a cheat was used in that game:
+ * the cheat code (which also enables teleport) or, in MM128, the options
+ * menu's infinite lives or infinite air (which can be toggled during play,
+ * so any frame with one active counts). */
+#define MM128_PatchAirCall  34843        /* CALL (0xCD) when air is finite */
+#define ScoreDigits (Score2 + 3)         /* six ASCII digits */
+
+static uint8_t hs_best[6];
+static int     hs_have, hs_cheated, hs_was_title = 1;
+
+static void hs_begin_game(void)
+{
+    hs_have = hs_load(v128, hs_best);
+    if (hs_have) memcpy(&mem[HighScore], hs_best, 6);
+    hs_cheated = 0;
+    hs_was_title = 1;
+}
+
+static void hs_track_cheats(void)
+{
+    int title = mm_in_title || mem[GameModeIndicator] != 0;
+    if (hs_was_title && !title) hs_cheated = 0;     /* a new game has begun */
+    hs_was_title = title;
+    if (title) return;
+    if (mem[KeyCounter] == CHEAT_DONE) hs_cheated = 1;
+    if (v128 && (mem[MM128_PatchLivesDec] != 0x35 || mem[MM128_PatchAirCall] != 0xCD))
+        hs_cheated = 1;
+}
+
+static void hs_game_over(void)
+{
+    const uint8_t *sc = &mem[ScoreDigits];
+    if (hs_cheated) {
+        if (getenv("MM_REPORT")) printf("game over: %.6s (cheat used, not saved)\n", (const char *)sc);
+        return;
+    }
+    if (hs_have && memcmp(sc, hs_best, 6) <= 0) return;   /* ASCII digits compare numerically */
+    if (!hs_have && memcmp(sc, "000000", 6) == 0) return;
+    memcpy(hs_best, sc, 6);
+    hs_have = 1;
+    int ok = hs_save(v128, hs_best);
+    if (getenv("MM_REPORT")) printf("game over: new high score %.6s %s\n", (const char *)hs_best, ok ? "saved" : "NOT saved");
+}
+
 static void frame_hook(void)
 {
     render_audio();
     poll_input();
+    hs_track_cheats();
 #if defined(HAVE_48) && defined(HAVE_128)
     if (back_to_chooser) {
         back_to_chooser = 0;
@@ -1071,6 +1128,7 @@ int main(int argc, char **argv)
     dbg_shots = getenv("MM_SHOTS");
     dbg_keys = getenv("MM_KEYS");
     dbg_teleport = getenv("MM_TELEPORT_AT");
+    dbg_set_score = getenv("MM_SET_SCORE");
     if (getenv("MM_DIAG")) diag_on = 1;
 #endif
     zx_frame_hook = frame_hook;
@@ -1151,17 +1209,21 @@ int main(int argc, char **argv)
     memset(mem, 0, sizeof mem);
     mm_install_font(have_rom ? rom : NULL);
     zx_in_filter = teleport_in_filter;
+    hs_init();
+    mm_game_over_hook = hs_game_over;
 #ifdef HAVE_128
     if (v128) {
         zx_set_model(ZX_MODEL_128K);
         ay_init(&ay, AY_CLOCK_128K, AUDIO_RATE);
         memcpy(mem + 0x4000, image128 + 0x4000, 0xC000);   /* keep our ROM area */
+        hs_begin_game();
         mm_run128();                                        /* never returns */
     }
 #endif
 #ifdef HAVE_48
     zx_set_model(ZX_MODEL_48K);
     memcpy(mem + 0x4000, image48 + 0x4000, 0xC000);
+    hs_begin_game();
     mm_run48();                                             /* never returns */
 #endif
     return 0;

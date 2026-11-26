@@ -18,8 +18,8 @@ B = build/host
 
 all: manicminer manicminer128 manicminerx
 
-manicminer: src/main.c $(GAME_SRCS) $(HDRS)
-	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ src/main.c $(GAME_SRCS) $(SDL_LIBS)
+manicminer: src/main.c src/hiscore.c $(GAME_SRCS) $(HDRS)
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ src/main.c src/hiscore.c $(GAME_SRCS) $(SDL_LIBS)
 
 $(B)/mm_game48.o: src/mm_game.c $(HDRS)
 	@mkdir -p $(B)
@@ -29,11 +29,11 @@ $(B)/mm_game128.o: src/mm_game.c $(HDRS)
 	@mkdir -p $(B)
 	$(CC) $(CFLAGS) -DMM128 -c -o $@ src/mm_game.c
 
-manicminer128: src/main.c $(B)/mm_game128.o $(COMMON128) $(HDRS)
-	$(CC) $(CFLAGS) -DMM_ONLY_128 $(SDL_CFLAGS) -o $@ src/main.c $(B)/mm_game128.o $(COMMON128) $(SDL_LIBS)
+manicminer128: src/main.c src/hiscore.c $(B)/mm_game128.o $(COMMON128) $(HDRS)
+	$(CC) $(CFLAGS) -DMM_ONLY_128 $(SDL_CFLAGS) -o $@ src/main.c src/hiscore.c $(B)/mm_game128.o $(COMMON128) $(SDL_LIBS)
 
-manicminerx: src/main.c $(B)/mm_game48.o $(B)/mm_game128.o $(COMMON128) $(HDRS)
-	$(CC) $(CFLAGS) -DMM_COMBINED $(SDL_CFLAGS) -o $@ src/main.c $(B)/mm_game48.o $(B)/mm_game128.o $(COMMON128) $(SDL_LIBS)
+manicminerx: src/main.c src/hiscore.c $(B)/mm_game48.o $(B)/mm_game128.o $(COMMON128) $(HDRS)
+	$(CC) $(CFLAGS) -DMM_COMBINED $(SDL_CFLAGS) -o $@ src/main.c src/hiscore.c $(B)/mm_game48.o $(B)/mm_game128.o $(COMMON128) $(SDL_LIBS)
 
 difftest: tools/difftest.c $(GAME_SRCS) tools/z80ref/z80.c src/*.h
 	$(CC) $(CFLAGS) -Wno-unused-parameter -o $@ tools/difftest.c $(GAME_SRCS) tools/z80ref/z80.c

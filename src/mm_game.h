@@ -31,4 +31,8 @@ extern int mm_in_title;
 /* Optional hook called after each AY music tick (MM128 only; test use). */
 extern void (*mm_music_tick_hook)(void);
 
+/* Optional hook called when a game ends (all lives lost), just before the
+ * game compares the score (six ASCII digits at Score2 + 3) with HighScore. */
+extern void (*mm_game_over_hook)(void);
+
 #endif

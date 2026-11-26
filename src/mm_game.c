@@ -1969,6 +1969,7 @@ MainLoop19:
     }
 
 DisplayGameOver:
+    if (mm_game_over_hook) mm_game_over_hook();
     {
         /* First check whether we have a new high score. */
         uint16_t h = HighScore, de = Score2 + 3;

@@ -10,7 +10,7 @@
 # copied next to default.xbe.
 
 XBE_TITLE   = ManicMinerX
-XBE_TITLEID = 4D4D0058      # "MM" 0x0058 ("X"); cxbe always writes FFFF0002, so it's patched in after
+XBE_TITLEID = 4D4D0058      # "MM X"; shared by all three builds (one save folder). cxbe writes FFFF0002; patched after
 GEN_XISO    = ManicMinerX.iso
 NXDK_SDL  = y
 TOP       = $(abspath $(CURDIR)/..)
@@ -20,6 +20,7 @@ SRCS = $(CURDIR)/main_x.c \
        $(CURDIR)/mm_game128.c \
        $(TOP)/src/zx.c \
        $(TOP)/src/mm_font.c \
+       $(TOP)/src/hiscore.c \
        $(TOP)/src/ay.c \
        $(TOP)/src/st_player.c \
        $(TOP)/src/mm128_load.c

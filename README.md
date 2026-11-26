@@ -73,6 +73,24 @@ The desktop build maps the PC keyboard onto the Spectrum keyboard (arrow keys al
 
 **How the teleport button works.** The game teleports when its teleport check sees the activator key (`6`, or `9` on Manic Miner 128) together with the cavern number in binary on keys `1`–`5`. Holding those keys down has side effects. On Manic Miner 128, key `1` also opens Mihai's options menu, which would toggle infinite lives and block the teleport for odd-numbered caverns. On both versions, key `5` also means "left". So the button doesn't hold keys. It answers exactly the two port reads the teleport check makes: the `0`–`6` row shows the activator, and the `1`–`5` read that immediately follows it shows the cavern number. Every other read sees `1`–`5` released. The game code is unchanged; the result is the same as a human pressing the keys at exactly the right moment. It fires once per press and reaches every cavern.
 
+## High scores
+
+The high score is kept between sessions, one score per game, the way the original keeps it within one sitting. When a game ends with a better score than the saved one, it is written to the Xbox's save area. The next time you play, it appears as the High Score.
+
+* All three XBEs use title ID `4D4D0058`, so they share one save folder. The 48K game's score is the same whichever XBE you play it from, and likewise for 128.
+* The dashboard's Memory screen shows the folder as **Manic Miner** with two saves, "Manic Miner high score" and "Manic Miner 128 high score". You can delete them there or copy them to a memory unit.
+* Scores from a game where cheats were used are not saved: the cheat code (6031769 or TYPEWRITER, which also enables teleport) or, in Manic Miner 128, the options menu's infinite lives or infinite air. Switching a menu cheat off again before the game ends still counts as cheating. Changing only the music option doesn't.
+* The save is written only at game over, never during play. Each write goes to a temporary file that then replaces the old one, so switching off mid-write leaves a usable save.
+
+```
+E:\UDATA\4D4D0058\TitleMeta.xbx                 TitleName=Manic Miner
+E:\UDATA\4D4D0058\000000000048\SaveMeta.xbx    Name=Manic Miner high score
+E:\UDATA\4D4D0058\000000000048\HISCORE.DAT     the score (16 bytes, checksummed)
+E:\UDATA\4D4D0058\000000000128\...             Manic Miner 128
+```
+
+nxdk's `cxbe` always writes title ID `FFFF0002`, so each build patches the certificate afterwards with `tools/xbe_titleid.sh <xbe> <id>`. The desktop build saves to `./UDATA/4D4D0058/...` instead, or to `$MM_SAVE_DIR/4D4D0058/...` if that variable is set.
+
 ## Sound and timing on the Xbox
 
 The game is paced by its sound: the emulated Spectrum runs only as fast as its audio is played, with about 80 ms queued. On the Xbox the AC97 controller is fed directly (not through SDL's audio thread): one DMA buffer per Spectrum frame in a ring of 32, with the queue level read from the controller's Current Index register. Speed and pitch therefore follow the 48 kHz hardware clock exactly. The picture is drawn straight into the framebuffer at 2×, and only when the Spectrum screen has changed. If the queue drops below ~40 ms, frames are emulated without being drawn until it recovers, so the sound never waits for the picture.
@@ -104,7 +122,7 @@ make -f Makefile.host            # needs SDL2 development files
 ./manicminer128                  # ManicMiner128.tap in the current directory
 ```
 
-Debug environment variables (desktop only): `MM_FAST=1` (no frame pacing), `MM_EXIT_AFTER=n`, `MM_SHOTS=f1,f2` (save BMP screenshots), `MM_ENTER_AT=f`, `MM_KEYS=f:c,...` (press keys), `MM_PCM=file` (dump audio).
+Debug environment variables (desktop only): `MM_FAST=1` (no frame pacing), `MM_EXIT_AFTER=n`, `MM_SHOTS=f1,f2` (save BMP screenshots), `MM_ENTER_AT=f`, `MM_KEYS=f:c,...` (press keys), `MM_SET_SCORE=f:dddddd` (set the score, for high-score tests), `MM_SAVE_DIR=dir` (save location), `MM_PCM=file` (dump audio).
 
 ## Layout
 
@@ -115,6 +133,8 @@ Debug environment variables (desktop only): `MM_FAST=1` (no frame pacing), `MM_E
 | `src/zx.c`, `src/zx.h` | 64K memory, T-state clock, keyboard/Kempston ports, beeper, screen renderer |
 | `src/mm_font.c` | Character set at `0x3D00` (from `48.rom` or built-in) |
 | `src/main.c` | SDL2 front end: video, audio, controller, pacing (Xbox and desktop) |
+| `src/hiscore.c` | Saved high scores (Xbox save area / desktop folder) |
+| `tools/xbe_titleid.sh` | Sets the XBE title ID (`4D4D0058`) after `cxbe` |
 | `src/mm128_load.c` | Manic Miner 128: TAP parsing and the tape's unpacker |
 | `src/st_player.c` | Manic Miner 128: Sound Tracker AY player, translated |
 | `src/ay.c` | AY-3-8912 emulation |
@@ -171,7 +191,7 @@ Verified the same way as the 48K game ([`tools/difftest128.c`](tools/difftest128
 
 `make -C ManicMinerX` builds ManicMinerX, one XBE containing both games (both engines are linked in, as `mm_run48` and `mm_run128`). At start-up it looks next to `default.xbe`:
 
-The XBE's title ID is `4D4D0058` ("MM X"). nxdk's `cxbe` always writes `FFFF0002`, so the build patches the certificate afterwards with `tools/xbe_titleid.sh <xbe> <id>`.
+Like the single-game XBEs it uses title ID `4D4D0058` ("MM X"), so all three share their saved high scores (see [High scores](#high-scores)).
 
 | Files present | What happens |
 |---|---|
