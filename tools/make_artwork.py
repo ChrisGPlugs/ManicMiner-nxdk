@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """Build an XBMC4Gamers _resources artwork set for ManicMinerX.
 
-usage: make_artwork.py <templates dir> <Artwork dir> <clean cover png> <out dir>
+usage: make_artwork.py <templates dir> <Artwork dir> <cover image> <out dir>
 
 <templates dir>  the XBMC4Gamers "Create _Resources Artwork" folder (PSDs, not in this repo)
 <Artwork dir>    the repo's Artwork/ folder (4.gif, 4 (1).gif)
-<clean cover>    output of clean_cover.py (Software Projects art, advert text removed)
+<cover image>    the clean Software Projects cover art, Artwork/ManicMiner_alt2.jpg (762x1198)
 
 Example, from the repo root:
-  python3 tools/clean_cover.py Artwork/ManicMiner.jpg artwork_out/cover_clean.png
   python3 tools/make_artwork.py "/path/to/Create _Resources Artwork" Artwork \
-      artwork_out/cover_clean.png artwork_out/_resources
+      Artwork/ManicMiner_alt2.jpg artwork_out/_resources
   (cd artwork_out && zip -r ManicMinerX_resources.zip _resources)
 
 Name the output folder _resources: XBMC4Gamers expects that folder (holding
@@ -21,7 +20,7 @@ The output is made from the publishers' cover art: keep it out of the repo and r
 
 Produces <out dir>/default.xml, screenshots/Screenshot-1.jpg and artwork/*
 with the same names, sizes and modes as the Abbayex example set.
-Needs: pillow, numpy, psd-tools (clean_cover.py also needs opencv-python).
+Needs: pillow, numpy, psd-tools.
 Fonts are loaded from tools/fonts/, so it runs the same on Windows, macOS and Linux.
 """
 import os
@@ -151,14 +150,19 @@ def font(path, size):
 
 # ---------------------------------------------------------------- sources
 
-cover = Image.open(COVER).convert("RGBA")          # 608x874 Software Projects art
+cover = Image.open(COVER).convert("RGBA")          # Software Projects art, any size
+CW, CH = cover.size
+# Positions below are fractions of the cover, measured on ManicMiner_alt2.jpg (762x1198).
+LOGO_BOTTOM = 0.371     # bottom of the MANIC MINER lettering (keeps the creature out)
+FRONT_TOP = 0.021       # rows dropped above the lettering on the front cover
+DISC_TITLE_Y = 190      # where the cover's top goes on the 904 px disc
 cavern = speccy_screen("4 (1).gif")                 # Central Cavern
 title_scr = speccy_screen("4.gif")                  # title screen
 
 
 def title_logo():
     """Cut the rocky MANIC MINER lettering out of the cover sky."""
-    crop = cover.crop((0, 0, 608, 292)).convert("RGB")
+    crop = cover.crop((0, 0, CW, round(CH * LOGO_BOTTOM))).convert("RGB")
     hsv = np.array(crop.convert("HSV")).astype(int)
     h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
     warm = ((h < 45) | (h > 245)) & (s > 60) & (v > 60)
@@ -186,8 +190,9 @@ FRONT = (848, 0, 1610, 1080)
 
 def build_front():
     f = Image.new("RGBA", (762, 1080), (0, 0, 0, 255))
-    art = cover.resize((762, round(874 * 762 / 608)), Image.LANCZOS)   # 762x1095
-    f.alpha_composite(art.crop((0, 0, 762, 973)), (0, 107))
+    art = cover.resize((762, round(CH * 762 / CW)), Image.LANCZOS)
+    top = round(art.height * FRONT_TOP)
+    f.alpha_composite(art.crop((0, top, 762, top + 973)), (0, 107))
     banner = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     banner.alpha_composite(layer_img(SCAN, "Banner Background"))
     banner.alpha_composite(layer_img(SCAN, "Banner TXT"))
@@ -236,7 +241,8 @@ def build_back():
     hb.alpha_composite(layer_img(SCAN, 23))           # HOMEBREW header (hidden in template)
     b.alpha_composite(hb.crop(BACK))
 
-    lg = LOGO.resize((560, round(LOGO.height * 560 / LOGO.width)), Image.LANCZOS)
+    k = min(560 / LOGO.width, 250 / LOGO.height)      # fit 560x250
+    lg = LOGO.resize((round(LOGO.width * k), round(LOGO.height * k)), Image.LANCZOS)
     b.alpha_composite(lg, ((762 - lg.width) // 2, 122))
     y0 = 122 + lg.height + 22
 
@@ -308,8 +314,8 @@ def build_disc():
     R = 432
     disc = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     art = Image.new("RGBA", (S, S), (62, 84, 98, 255))       # cover sky colour
-    a = cover.resize((864, round(874 * 864 / 608)), Image.LANCZOS)
-    art.alpha_composite(a, (22, 236))
+    a = cover.resize((864, round(CH * 864 / CW)), Image.LANCZOS)
+    art.alpha_composite(a, (22, DISC_TITLE_Y))
     m = Image.new("L", (S, S), 0)
     ImageDraw.Draw(m).ellipse((cx - R, cy - R, cx + R, cy + R), fill=255)
     disc.paste(art, (0, 0), m)
