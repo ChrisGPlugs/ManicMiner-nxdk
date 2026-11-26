@@ -10,12 +10,13 @@ usage: make_artwork.py <templates dir> <Artwork dir> <clean cover png> <out dir>
 Example, from the repo root:
   python3 tools/clean_cover.py Artwork/ManicMiner.jpg artwork_out/cover_clean.png
   python3 tools/make_artwork.py "/path/to/Create _Resources Artwork" Artwork \
-      artwork_out/cover_clean.png artwork_out/ManicMinerX
-  (cd artwork_out && zip -r ManicMinerX_artwork.zip ManicMinerX)
+      artwork_out/cover_clean.png artwork_out/_resources
+  (cd artwork_out && zip -r ManicMinerX_resources.zip _resources)
 
-The output folder holds default.xml, screenshots/ and artwork/; its contents go in
-the game's _resources folder for XBMC4Gamers. Also writes scan_full.png (the flat
-1610x1080 cover) and disc_full.png next to the output folder.
+Name the output folder _resources: XBMC4Gamers expects that folder (holding
+default.xml, screenshots/ and artwork/) next to the game's default.xbe.
+Also writes scan_full.png (the flat 1610x1080 cover) and disc_full.png next to
+the output folder.
 The output is made from the publishers' cover art: keep it out of the repo and releases.
 
 Produces <out dir>/default.xml, screenshots/Screenshot-1.jpg and artwork/*
@@ -228,7 +229,7 @@ def framed_shot(scr, w):
 
 def build_back():
     b = gradient((762, 1080), BG_TOP, BG_BOT)
-    
+
     hb = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     hb.alpha_composite(layer_img(SCAN, 23))           # HOMEBREW header (hidden in template)
     b.alpha_composite(hb.crop(BACK))
