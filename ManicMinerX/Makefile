@@ -9,8 +9,9 @@
 # 48.rom) in the repository's top folder before running make and they are
 # copied next to default.xbe.
 
-XBE_TITLE = ManicMinerX
-GEN_XISO  = ManicMinerX.iso
+XBE_TITLE   = ManicMinerX
+XBE_TITLEID = 4D4D0058      # "MM" 0x0058 ("X"); cxbe always writes FFFF0002, so it's patched in after
+GEN_XISO    = ManicMinerX.iso
 NXDK_SDL  = y
 TOP       = $(abspath $(CURDIR)/..)
 
@@ -31,8 +32,11 @@ include $(NXDK_DIR)/Makefile
 
 GAME_DATA := $(wildcard $(TOP)/ManicMiner.bin $(TOP)/ManicMiner128.tap $(TOP)/48.rom)
 
-.PHONY: gamedata
-gamedata: $(OUTPUT_DIR)/default.xbe
+.PHONY: titleid gamedata
+titleid: $(OUTPUT_DIR)/default.xbe
+	@sh $(TOP)/tools/xbe_titleid.sh $(OUTPUT_DIR)/default.xbe $(XBE_TITLEID)
+
+gamedata: titleid
 	@for f in $(GAME_DATA); do cp "$$f" $(OUTPUT_DIR)/; echo "[ COPY     ] $$(basename $$f)"; done
 
 $(GEN_XISO): gamedata

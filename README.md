@@ -171,6 +171,8 @@ Verified the same way as the 48K game ([`tools/difftest128.c`](tools/difftest128
 
 `make -C ManicMinerX` builds ManicMinerX, one XBE containing both games (both engines are linked in, as `mm_run48` and `mm_run128`). At start-up it looks next to `default.xbe`:
 
+The XBE's title ID is `4D4D0058` ("MM X"). nxdk's `cxbe` always writes `FFFF0002`, so the build patches the certificate afterwards with `tools/xbe_titleid.sh <xbe> <id>`.
+
 | Files present | What happens |
 |---|---|
 | `ManicMiner.bin` only | Manic Miner (Bug-Byte) starts |
