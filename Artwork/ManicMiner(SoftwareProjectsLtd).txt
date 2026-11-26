@@ -1,0 +1,69 @@
+Manic Miner (c) 1983 Software Projects Ltd 
+------------------------------------------
+
+INTRODUCTION
+
+Miner Willy, while prospecting down Surbiton way, stumbles
+upon an ancient, long forgotten mine-shaft. On further
+exploration, he finds evidence of a lost civilisation far
+superior to our own, which used automatons to dig beep into
+the Earth's core to supply the essential raw materials for
+their advanced industry. After centuries of peace and
+prosperity, the civilisation was torn apart by war, and
+lapsed into a long dark age, abandoning their industry and
+machines. Nobody, however, thought to tell the mine robots
+to stop working, and through countless aeons they had
+steadily accumulated a hugh stockpile of valuable metals
+and minerals, and Miner Willy realises that he now has the
+opportunity to make his fortune by finding the underground
+store.
+
+In order to move to the next chamber, you must collect all
+the flashing keys in the room while avoiding nasties like
+POISONOUS PANSIES and SPIDERS and SLIME and worst of all,
+MANIC MINING ROBOTS. When you have all the keys, you can
+enter the portal which will now be flashing. The game ends
+when you have been 'got' or fallen heavily three times.
+
+LOADING INSTRUCTIONS
+
+1.  Connect lead to ear socket of Spectrum from ear socket
+    on recorder.
+2.  Rewind tape to beginning.
+3.  Set Volume Control to the required level.
+4.  Type LOAD "" or LOAD "MANICMINER".
+5.  Press key marked enter on your Spectrum.
+6.  Press play on your cassette recorder.
+7.  Your program will now load.
+
+If the program does not load first time, repeat instructions
+but try a different volume setting.
+
+TO MOVE USE KEYS
+
+Q, E, T, U, or O = MOVE LEFT
+W, R, Y, I, or P = MOVE RIGHT
+SHIFT TO SPACE   = JUMP
+
+Manic Miner can also be played using AGF and Protek and
+Kempston joystick interfaces, and is aslo compatible with
+Interface II.
+
+Author: Mathew Smith
+
+------------------------------------------------------------
+
+  MANIC MINER (c) Copyright 1983 by Software Projects Ltd.
+ Unauthorised copying, lending, hiring, public brodcasting,
+ transmission or distribution is prohibited without express
+       written permission of Software Projects Ld.
+
+   MANIC MINER may not be hired or offered to sale on any
+  optional buy back basis without prior written consent of
+                    Software Projects Ld.
+
+       All rights of the Author are reserved worldwide.
+
+------------------------------------------------------------
+
+Complete Instructions typed in by Paul Thompson, April 2003
