@@ -21,7 +21,8 @@ The output is made from the publishers' cover art: keep it out of the repo and r
 
 Produces <out dir>/default.xml, screenshots/Screenshot-1.jpg and artwork/*
 with the same names, sizes and modes as the Abbayex example set.
-Needs: pillow, numpy, psd-tools.
+Needs: pillow, numpy, psd-tools (clean_cover.py also needs opencv-python).
+Fonts are loaded from tools/fonts/, so it runs the same on Windows, macOS and Linux.
 """
 import os
 import sys
@@ -33,7 +34,8 @@ from psd_tools import PSDImage
 from psd_tools.constants import Tag
 
 TPL, ART, COVER, OUT = sys.argv[1:5]
-FONT_DIR = "/usr/share/fonts/truetype/google-fonts"
+# Poppins (SIL OFL 1.1, see tools/fonts/OFL.txt), kept next to this script
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 BOLD = os.path.join(FONT_DIR, "Poppins-Bold.ttf")
 MED = os.path.join(FONT_DIR, "Poppins-Medium.ttf")
 REG = os.path.join(FONT_DIR, "Poppins-Regular.ttf")
